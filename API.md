@@ -100,6 +100,26 @@ Comprehensive system status including memory usage and loaded models.
 }
 ```
 
+#### `POST /v1/system/shutdown`
+Gracefully shutdown the server.
+
+**Response:**
+```json
+{
+  "message": "Server shutting down"
+}
+```
+
+#### `POST /v1/system/restart`
+Restart the server with updated settings.
+
+**Response:**
+```json
+{
+  "message": "Server restarting with updated settings"
+}
+```
+
 ---
 
 ## Model Management
@@ -496,7 +516,8 @@ Get all application settings.
   "enable_system_tray": true,
   "log_level": "INFO",
   "huggingface_cache_dir": "",
-  "enable_gpu_acceleration": true
+  "enable_gpu_acceleration": true,
+  "bind_to_all_interfaces": false
 }
 ```
 

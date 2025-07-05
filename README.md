@@ -27,8 +27,20 @@ pip install mlx-gui
 
 ## Usage
 
+**Command Line:**
 ```bash
 mlx-gui start --port 8000
+```
+
+**System Tray App:**
+```bash
+mlx-gui tray
+```
+
+**Build Standalone App:**
+```bash
+pip install -e ".[app]"
+./build_app.sh
 ```
 
 ## Development

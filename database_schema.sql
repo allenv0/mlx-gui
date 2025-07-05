@@ -127,4 +127,5 @@ INSERT INTO app_settings (key, value, value_type, description) VALUES
     ('enable_system_tray', 'true', 'boolean', 'Enable system tray integration'),
     ('log_level', 'INFO', 'string', 'Application logging level'),
     ('huggingface_cache_dir', '', 'string', 'HuggingFace cache directory path'),
-    ('enable_gpu_acceleration', 'true', 'boolean', 'Enable GPU acceleration when available');
+    ('enable_gpu_acceleration', 'true', 'boolean', 'Enable GPU acceleration when available'),
+    ('bind_to_all_interfaces', 'false', 'boolean', 'Bind server to all interfaces (0.0.0.0) instead of localhost only');

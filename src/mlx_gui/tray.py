@@ -14,6 +14,7 @@ import requests
 import rumps
 
 from mlx_gui.cli import start as start_server
+from mlx_gui.database import get_database_manager
 
 logger = logging.getLogger(__name__)
 
@@ -24,11 +25,24 @@ class MLXTrayApp(rumps.App):
     def __init__(self, port: int = 8000, host: str = "127.0.0.1"):
         # Use simple text instead of icon - much cleaner!
         super().__init__("MLX", title="MLX")
-        self.port = port
-        self.host = host
-        self.base_url = f"http://{host}:{port}"
+        self.default_port = port
+        self.default_host = host
         self.server_thread = None
         self.server_running = False
+        
+        # Read settings from database
+        try:
+            db_manager = get_database_manager()
+            bind_to_all = db_manager.get_setting("bind_to_all_interfaces", False)
+            self.port = db_manager.get_setting("server_port", self.default_port)
+            self.host = "0.0.0.0" if bind_to_all else self.default_host
+        except Exception as e:
+            logger.warning(f"Failed to read settings from database: {e}")
+            self.port = self.default_port
+            self.host = self.default_host
+        
+        # Always use localhost for API calls, even when binding to all interfaces
+        self.base_url = f"http://127.0.0.1:{self.port}"
         
         # Status tracking
         self.system_status = {}
@@ -43,6 +57,19 @@ class MLXTrayApp(rumps.App):
         self.admin_item = rumps.MenuItem("Open Admin Interface", callback=self.open_admin)
         self.unload_item = rumps.MenuItem("Unload All Models", callback=self.unload_all_models)
         self.separator2 = rumps.MenuItem("---", callback=None)
+        
+        # Network settings
+        try:
+            db_manager = get_database_manager()
+            bind_to_all = db_manager.get_setting("bind_to_all_interfaces", False)
+            self.bind_checkbox = rumps.MenuItem("Bind to All Interfaces", callback=self.toggle_bind_interfaces)
+            self.bind_checkbox.state = bind_to_all
+        except Exception as e:
+            logger.warning(f"Failed to initialize bind checkbox: {e}")
+            self.bind_checkbox = rumps.MenuItem("Bind to All Interfaces", callback=self.toggle_bind_interfaces)
+            self.bind_checkbox.state = False
+        
+        self.separator3 = rumps.MenuItem("---", callback=None)
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
         
         # Add items to menu
@@ -54,6 +81,8 @@ class MLXTrayApp(rumps.App):
             self.admin_item,
             self.unload_item,
             self.separator2,
+            self.bind_checkbox,
+            self.separator3,
             self.quit_item
         ]
         
@@ -249,6 +278,95 @@ class MLXTrayApp(rumps.App):
                     ok="OK"
                 )
     
+    def toggle_bind_interfaces(self, sender):
+        """Toggle the bind to all interfaces setting."""
+        current_state = sender.state
+        new_state = not current_state
+        
+        # Confirm the change
+        if new_state:
+            response = rumps.alert(
+                title="Bind to All Interfaces",
+                message="This will expose the server on all network interfaces (0.0.0.0).\n"
+                        "This allows access from other devices on your network but may pose security risks.\n"
+                        "The server will be restarted. Continue?",
+                ok="Enable & Restart",
+                cancel="Cancel"
+            )
+        else:
+            response = rumps.alert(
+                title="Bind to Localhost Only",
+                message="This will restrict the server to localhost only (127.0.0.1).\n"
+                        "The server will be restarted. Continue?",
+                ok="Disable & Restart",
+                cancel="Cancel"
+            )
+        
+        if response == 1:  # OK clicked
+            try:
+                # Update the setting in the database
+                db_manager = get_database_manager()
+                db_manager.set_setting("bind_to_all_interfaces", new_state)
+                
+                # Update checkbox state
+                sender.state = new_state
+                
+                # Update internal state
+                self.host = "0.0.0.0" if new_state else self.default_host
+                # Re-read port setting in case it changed
+                self.port = db_manager.get_setting("server_port", self.default_port)
+                # Always use localhost for API calls, even when binding to all interfaces
+                self.base_url = f"http://127.0.0.1:{self.port}"
+                
+                logger.info(f"Bind to all interfaces setting changed to: {new_state}")
+                
+                # Restart server
+                self.restart_server()
+                
+            except Exception as e:
+                logger.error(f"Failed to update bind setting: {e}")
+                rumps.alert(
+                    title="Error",
+                    message=f"Failed to update setting: {e}",
+                    ok="OK"
+                )
+                # Revert checkbox state
+                sender.state = current_state
+
+    def restart_server(self):
+        """Restart the server with new settings."""
+        logger.info("Restarting server...")
+        
+        # Stop the current server
+        self.server_running = False
+        
+        # Wait a bit for the server to stop
+        time.sleep(2)
+        
+        # Start a new server thread
+        self.server_thread = threading.Thread(
+            target=self.start_server_background,
+            name="mlx_server",
+            daemon=True
+        )
+        self.server_thread.start()
+        
+        # Wait for server to be ready
+        ready_thread = threading.Thread(
+            target=self.wait_for_server,
+            name="server_ready_check",
+            daemon=True
+        )
+        ready_thread.start()
+        
+        # Show notification
+        rumps.notification(
+            title="MLX-GUI",
+            subtitle="Server Restarted",
+            message=f"Server now binding to: {self.host}:{self.port}",
+            sound=False
+        )
+
     def quit_app(self, sender):
         """Quit the application and stop the server."""
         response = rumps.alert(
@@ -267,7 +385,7 @@ class MLXTrayApp(rumps.App):
             
             # Try graceful shutdown via API
             try:
-                requests.post(f"{self.base_url}/shutdown", timeout=5)
+                requests.post(f"{self.base_url}/v1/system/shutdown", timeout=5)
             except:
                 pass
             
@@ -304,8 +422,11 @@ class MLXTrayApp(rumps.App):
 def run_tray_app(port: int = 8000, host: str = "127.0.0.1"):
     """Run the MLX-GUI tray application."""
     try:
+        print(f"Initializing tray app on {host}:{port}")
         app = MLXTrayApp(port=port, host=host)
+        print("Tray app initialized, starting...")
         app.run()
+        print("Tray app stopped")
     except ImportError as e:
         if "rumps" in str(e):
             logger.error("rumps library not installed. Install with: pip install rumps")
@@ -313,9 +434,14 @@ def run_tray_app(port: int = 8000, host: str = "127.0.0.1"):
             print("Install with: pip install rumps")
             return False
         else:
+            logger.error(f"Import error: {e}")
+            print(f"Import error: {e}")
             raise
     except Exception as e:
         logger.error(f"Tray app error: {e}")
+        print(f"Tray app error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
     
     return True

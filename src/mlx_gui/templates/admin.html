@@ -250,6 +250,34 @@
                                 </div>
                             </div>
                         </div>
+                        
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <h3 class="text-lg font-bold text-white mb-4">Network Settings</h3>
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Server Port</label>
+                                    <input type="number" id="server-port" min="1" max="65535" class="w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600">
+                                    <p class="text-xs text-gray-500 mt-1">
+                                        Port number for the server (1-65535). Default is 8000.
+                                    </p>
+                                </div>
+                                <div>
+                                    <label class="flex items-center text-sm font-medium text-gray-300">
+                                        <input type="checkbox" id="bind-all-interfaces" class="rounded mr-2">
+                                        Bind to All Interfaces
+                                    </label>
+                                    <p class="text-xs text-gray-500 mt-1">
+                                        Allow access from other devices on your network (0.0.0.0). 
+                                        <span class="text-yellow-400">⚠️ Security Risk:</span> Only enable on trusted networks.
+                                    </p>
+                                </div>
+                                <div>
+                                    <button onclick="saveSettings()" class="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">
+                                        <i class="fas fa-save mr-2"></i>Save Settings
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -269,6 +297,27 @@
         <div class="flex items-center">
             <i id="toast-icon" class="fas fa-check-circle text-green-400 mr-3"></i>
             <span id="toast-message" class="text-white"></span>
+        </div>
+    </div>
+
+    <!-- Restart Confirmation Dialog -->
+    <div id="restart-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
+        <div class="glass rounded-lg p-8 max-w-md w-full mx-4">
+            <div class="text-center">
+                <i class="fas fa-sync-alt text-4xl text-yellow-400 mb-4"></i>
+                <h3 class="text-xl font-bold text-white mb-4">Server Restart Required</h3>
+                <p class="text-gray-300 mb-6">
+                    Network settings have changed (port or bind settings). The server needs to restart for changes to take effect.
+                </p>
+                <div class="flex space-x-4">
+                    <button onclick="restartServerNow()" class="flex-1 bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded">
+                        <i class="fas fa-sync-alt mr-2"></i>Restart Now
+                    </button>
+                    <button onclick="closeRestartDialog()" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white px-4 py-2 rounded">
+                        <i class="fas fa-clock mr-2"></i>Later
+                    </button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -326,7 +375,14 @@
             const icon = document.getElementById('toast-icon');
             const messageEl = document.getElementById('toast-message');
 
-            icon.className = type === 'success' ? 'fas fa-check-circle text-green-400 mr-3' : 'fas fa-exclamation-circle text-red-400 mr-3';
+            let iconClass = 'fas fa-check-circle text-green-400 mr-3';
+            if (type === 'error') {
+                iconClass = 'fas fa-exclamation-circle text-red-400 mr-3';
+            } else if (type === 'warning') {
+                iconClass = 'fas fa-exclamation-triangle text-yellow-400 mr-3';
+            }
+            
+            icon.className = iconClass;
             messageEl.textContent = message;
             
             toast.classList.remove('hidden');
@@ -427,8 +483,21 @@
                         <div class="flex-1">
                             <div class="flex items-center mb-2">
                                 <span class="status-indicator ${getStatusClass(model.status)}"></span>
-                                <h3 class="text-lg font-medium text-white">${model.name}</h3>
+                                <h3 class="text-lg font-medium text-white">
+                                    ${model.huggingface_id ? 
+                                        `<a href="https://huggingface.co/${model.huggingface_id}" target="_blank" rel="noopener noreferrer" 
+                                           class="hover:text-blue-300 transition-colors cursor-pointer">
+                                            ${model.name}
+                                        </a>` :
+                                        model.name
+                                    }
+                                </h3>
                                 <span class="ml-2 px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">${model.type}</span>
+                                ${model.author && model.author !== 'unknown' ? 
+                                    `<span class="ml-2 px-2 py-1 text-xs bg-purple-700 text-purple-300 rounded">
+                                        <i class="fas fa-user mr-1"></i>${model.author}
+                                    </span>` : ''
+                                }
                             </div>
                             <div class="flex items-center space-x-4 text-sm text-gray-400">
                                 <span><i class="fas fa-memory mr-1"></i>${model.memory_required_gb} GB</span>
@@ -580,7 +649,12 @@
                     <div class="flex items-center justify-between">
                         <div class="flex-1">
                             <div class="flex items-center mb-2">
-                                <h3 class="text-lg font-medium text-white">${model.name}</h3>
+                                <h3 class="text-lg font-medium text-white">
+                                    <a href="https://huggingface.co/${model.id}" target="_blank" rel="noopener noreferrer" 
+                                       class="hover:text-blue-300 transition-colors cursor-pointer">
+                                        ${model.name}
+                                    </a>
+                                </h3>
                                 <span class="ml-2 px-2 py-1 text-xs bg-blue-700 text-blue-300 rounded">${model.model_type}</span>
                                 ${model.mlx_compatible ? '<span class="ml-2 px-2 py-1 text-xs bg-green-700 text-green-300 rounded">MLX</span>' : ''}
                             </div>
@@ -588,7 +662,7 @@
                             <div class="flex items-center space-x-4 text-sm text-gray-400">
                                 <span><i class="fas fa-download mr-1"></i>${model.downloads?.toLocaleString() || '0'}</span>
                                 <span><i class="fas fa-heart mr-1"></i>${model.likes || '0'}</span>
-                                ${model.size_gb ? `<span><i class="fas fa-memory mr-1"></i>${model.size_gb.toFixed(1)} GB</span>` : ''}
+                                ${model.size_gb && model.size_gb > 0 ? `<span><i class="fas fa-memory mr-1"></i>${model.size_gb.toFixed(1)} GB</span>` : ''}
                                 <span><i class="fas fa-user mr-1"></i>${model.author}</span>
                             </div>
                         </div>
@@ -662,8 +736,89 @@
                 document.getElementById('timeout-minutes').value = settings.model_inactivity_timeout_minutes;
                 document.getElementById('max-models').value = settings.max_concurrent_requests;
                 document.getElementById('log-level').value = settings.log_level;
+                document.getElementById('server-port').value = settings.server_port;
+                document.getElementById('bind-all-interfaces').checked = settings.bind_to_all_interfaces;
             } catch (error) {
                 showToast('Failed to load settings', 'error');
+            }
+        }
+
+        async function saveSettings() {
+            try {
+                showLoading('Saving settings...');
+                
+                // Get current settings to check for changes
+                const currentSettings = await apiCall('/v1/settings');
+                
+                const newSettings = {
+                    auto_unload_inactive_models: document.getElementById('auto-unload').checked,
+                    model_inactivity_timeout_minutes: parseInt(document.getElementById('timeout-minutes').value),
+                    max_concurrent_requests: parseInt(document.getElementById('max-models').value),
+                    log_level: document.getElementById('log-level').value,
+                    server_port: parseInt(document.getElementById('server-port').value),
+                    bind_to_all_interfaces: document.getElementById('bind-all-interfaces').checked
+                };
+
+                // Check if network settings changed
+                const networkSettingsChanged = 
+                    currentSettings.server_port !== newSettings.server_port ||
+                    currentSettings.bind_to_all_interfaces !== newSettings.bind_to_all_interfaces;
+
+                // Save each setting
+                for (const [key, value] of Object.entries(newSettings)) {
+                    await apiCall(`/v1/settings/${key}`, {
+                        method: 'PUT',
+                        body: JSON.stringify({ value })
+                    });
+                }
+
+                showToast('Settings saved successfully');
+                
+                // If network settings changed, offer immediate restart
+                if (networkSettingsChanged) {
+                    setTimeout(() => {
+                        showRestartDialog();
+                    }, 500);
+                }
+                
+            } catch (error) {
+                showToast('Failed to save settings', 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Restart dialog functions
+        function showRestartDialog() {
+            document.getElementById('restart-modal').classList.remove('hidden');
+        }
+
+        function closeRestartDialog() {
+            document.getElementById('restart-modal').classList.add('hidden');
+        }
+
+        async function restartServerNow() {
+            try {
+                showLoading('Restarting server...');
+                closeRestartDialog();
+                
+                // Call restart endpoint
+                await apiCall('/v1/system/restart', {
+                    method: 'POST'
+                });
+                
+                // Show success message
+                showToast('Server restarting... Please wait a moment then refresh the page.', 'success');
+                
+                // Auto-refresh page after delay
+                setTimeout(() => {
+                    window.location.reload();
+                }, 5000);
+                
+            } catch (error) {
+                showToast('Failed to restart server. Please restart manually.', 'error');
+            } finally {
+                hideLoading();
             }
         }
 

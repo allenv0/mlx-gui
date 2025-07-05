@@ -60,6 +60,12 @@ tray = [
     "pillow>=10.0.0",
 ]
 
+app = [
+    "pyinstaller>=6.0.0",
+    "rumps>=0.4.0",
+    "pillow>=10.0.0",
+]
+
 [project.scripts]
 mlx-gui = "mlx_gui.cli:main"
 

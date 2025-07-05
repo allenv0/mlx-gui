@@ -79,6 +79,7 @@ class DatabaseManager:
             ("log_level", "INFO", "Application logging level"),
             ("huggingface_cache_dir", "", "HuggingFace cache directory path"),
             ("enable_gpu_acceleration", True, "Enable GPU acceleration when available"),
+            ("bind_to_all_interfaces", False, "Bind server to all interfaces (0.0.0.0) instead of localhost only"),
         ]
         
         with self.get_session() as session:

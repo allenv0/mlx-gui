@@ -83,6 +83,47 @@ class HuggingFaceClient:
             "175b": 175.0,
             "235b": 235.0,  # Qwen3-235B
             "405b": 405.0,
+            # Add additional patterns for unconventional naming
+            "1.3b": 1.3,
+            "2.8b": 2.8,
+            "6.7b": 6.7,
+            "12b": 12.0,
+            "16b": 16.0,
+            "18b": 18.0,
+            "25b": 25.0,
+            "28b": 28.0,
+            "33b": 33.0,
+            "42b": 42.0,
+            "48b": 48.0,
+            "52b": 52.0,
+            "56b": 56.0,
+            "80b": 80.0,
+            "120b": 120.0,
+            "180b": 180.0,
+            # Patterns for models with different suffixes
+            "-1b": 1.0,
+            "-2b": 2.0,
+            "-3b": 3.0,
+            "-7b": 7.0,
+            "-8b": 8.0,
+            "-13b": 13.0,
+            "-70b": 70.0,
+            # Patterns for models with 'billion' written out
+            "1billion": 1.0,
+            "2billion": 2.0,
+            "3billion": 3.0,
+            "7billion": 7.0,
+            "8billion": 8.0,
+            "13billion": 13.0,
+            "70billion": 70.0,
+            # Alternative formats
+            "1.0b": 1.0,
+            "2.0b": 2.0,
+            "3.0b": 3.0,
+            "7.0b": 7.0,
+            "8.0b": 8.0,
+            "13.0b": 13.0,
+            "70.0b": 70.0,
         }
     
     def search_mlx_models(self, 
@@ -267,14 +308,89 @@ class HuggingFaceClient:
         """Calculate model memory requirements from parameter count and quantization."""
         try:
             model_name = model.id.lower()
-            
-            # Find parameter count from model name (longest match wins)
             param_count_billions = None
-            best_match_length = 0
-            for pattern, param_count in self.param_patterns.items():
-                if pattern in model_name and len(pattern) > best_match_length:
-                    param_count_billions = param_count
-                    best_match_length = len(pattern)
+            matched_pattern = None
+            
+            # First, try to extract parameter count from model card content
+            try:
+                description = getattr(model, 'description', '') or ''
+                
+                # Look for parameter patterns in description
+                import re
+                
+                # Patterns to match parameter counts in model cards
+                param_patterns = [
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s+param',        # "3.68B params"
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s+parameter',    # "3.68B parameters"
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s+model',        # "3.68B model"
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s+weights',      # "3.68B weights"
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s*-?\s*param',   # "3.68B-param"
+                    r'Parameters?:\s*(\d+(?:\.\d+)?)\s*[Bb]',             # "Parameters: 3.68B"
+                    r'Model size:\s*(\d+(?:\.\d+)?)\s*[Bb]',             # "Model size: 3.68B"
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s*parameter',    # "3.68Billion parameter"
+                ]
+                
+                for pattern in param_patterns:
+                    matches = re.findall(pattern, description, re.IGNORECASE)
+                    if matches:
+                        param_count_billions = float(matches[0])
+                        matched_pattern = f"card-{pattern}"
+                        logger.debug(f"Found parameter count in model card for {model.id}: {param_count_billions}B")
+                        break
+                
+            except Exception as e:
+                logger.debug(f"Could not parse model card for {model.id}: {e}")
+            
+            # If not found in description, try safetensors metadata (where HuggingFace stores "3.68B params")
+            if not param_count_billions:
+                try:
+                    model_info_data = self.api.model_info(model.id)
+                    if hasattr(model_info_data, 'safetensors') and model_info_data.safetensors:
+                        # Look through safetensors metadata for parameter information
+                        for file_name, metadata in model_info_data.safetensors.items():
+                            # Check for parameter count in metadata
+                            if isinstance(metadata, dict):
+                                # Sometimes stored as 'total_size' in parameter count
+                                if 'total' in metadata:
+                                    total_params = metadata.get('total', 0)
+                                    if total_params > 1000000:  # Reasonable parameter count
+                                        param_count_billions = total_params / 1e9
+                                        matched_pattern = f"safetensors-total"
+                                        logger.debug(f"Found parameter count in safetensors for {model.id}: {param_count_billions}B")
+                                        break
+                                
+                                # Check metadata strings for patterns like "3.68B"
+                                metadata_str = str(metadata)
+                                for pattern in param_patterns:
+                                    matches = re.findall(pattern, metadata_str, re.IGNORECASE)
+                                    if matches:
+                                        param_count_billions = float(matches[0])
+                                        matched_pattern = f"safetensors-{pattern}"
+                                        logger.debug(f"Found parameter count in safetensors metadata for {model.id}: {param_count_billions}B")
+                                        break
+                                if param_count_billions:
+                                    break
+                except Exception as e:
+                    logger.debug(f"Could not parse safetensors metadata for {model.id}: {e}")
+            
+            # If not found in metadata, try to extract from model name as final fallback
+            if not param_count_billions:
+                best_match_length = 0
+                
+                # Use word boundaries to ensure we match complete parameter specifications
+                import re
+                
+                for pattern, param_count in self.param_patterns.items():
+                    # Create regex pattern with word boundaries
+                    # Match the pattern only when it's surrounded by non-alphanumeric characters
+                    escaped_pattern = re.escape(pattern)
+                    regex_pattern = rf'(?<![a-zA-Z0-9]){escaped_pattern}(?![a-zA-Z0-9])'
+                    
+                    if re.search(regex_pattern, model_name, re.IGNORECASE):
+                        if len(pattern) > best_match_length:
+                            param_count_billions = param_count
+                            best_match_length = len(pattern)
+                            matched_pattern = f"name-{pattern}"
             
             if param_count_billions:
                 # Determine bits per parameter from quantization
@@ -299,29 +415,11 @@ class HuggingFaceClient:
                 # Add MLX overhead (25% for inference, activations, etc.)
                 total_memory_gb = base_memory_gb * 1.25
                 
-                logger.debug(f"Model {model.id}: {param_count_billions}B params, {bits_per_param}-bit = {total_memory_gb:.1f}GB")
+                logger.debug(f"Model {model.id}: {param_count_billions}B params (source: {matched_pattern}), {bits_per_param}-bit = {total_memory_gb:.1f}GB")
                 return total_memory_gb
             
-            # Fallback: estimate from file size (less accurate)
-            try:
-                # Use model_info instead of listing files individually (more efficient)
-                model_info_data = self.api.model_info(model.id)
-                if hasattr(model_info_data, 'safetensors') and model_info_data.safetensors:
-                    # Use safetensors metadata if available
-                    total_size = sum(
-                        file_data.get('total_size', 0) 
-                        for file_data in model_info_data.safetensors.values()
-                    )
-                    if total_size > 0:
-                        file_size_gb = total_size / (1024**3)
-                        return file_size_gb * 1.5
-                
-                # Last resort: estimate default size for unknown models
-                return 4.0  # 4GB default
-                    
-            except Exception as e:
-                logger.debug(f"Could not get file sizes for {model.id}: {e}")
-            
+            # If we can't determine parameter count, don't guess - return None
+            logger.debug(f"Could not determine parameter count for {model.id} - no size estimate available")
             return None
             
         except Exception as e:

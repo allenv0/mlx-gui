@@ -208,6 +208,8 @@ def create_app() -> FastAPI:
                     "use_count": model.use_count,
                     "last_used_at": model.last_used_at.isoformat() if model.last_used_at else None,
                     "created_at": model.created_at.isoformat() if model.created_at else None,
+                    "huggingface_id": model.huggingface_id,
+                    "author": model.huggingface_id.split("/")[0] if model.huggingface_id and "/" in model.huggingface_id else "unknown",
                 }
                 for model in models
             ]
@@ -1073,18 +1075,226 @@ def create_app() -> FastAPI:
         """Serve the admin interface."""
         from fastapi.responses import HTMLResponse
         from pathlib import Path
+        import sys
         
-        # Read the admin template
-        template_path = Path(__file__).parent / "templates" / "admin.html"
+        # Read the admin template - handle both development and bundled app
+        if hasattr(sys, 'frozen') and sys.frozen:
+            # Running as bundled app - use PyInstaller's _MEIPASS
+            if hasattr(sys, '_MEIPASS'):
+                template_path = Path(sys._MEIPASS) / "mlx_gui" / "templates" / "admin.html"
+                logger.info(f"PyInstaller bundled app: Looking for template at {template_path}")
+                logger.info(f"_MEIPASS directory: {sys._MEIPASS}")
+                # List contents of _MEIPASS for debugging
+                meipass_path = Path(sys._MEIPASS)
+                if meipass_path.exists():
+                    logger.info(f"_MEIPASS contents: {list(meipass_path.iterdir())}")
+                    mlx_gui_path = meipass_path / "mlx_gui"
+                    if mlx_gui_path.exists():
+                        logger.info(f"mlx_gui directory contents: {list(mlx_gui_path.iterdir())}")
+            else:
+                # Fallback for frozen apps without _MEIPASS
+                template_path = Path(sys.executable).parent / "mlx_gui" / "templates" / "admin.html"
+                logger.info(f"Frozen app fallback: Looking for template at {template_path}")
+        else:
+            # Running in development
+            template_path = Path(__file__).parent / "templates" / "admin.html"
+            logger.info(f"Development mode: Looking for template at {template_path}")
+            
         if not template_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Admin interface template not found"
-            )
+            # Try to find template in alternate locations
+            logger.error(f"Template not found at {template_path}")
+            if hasattr(sys, 'frozen') and sys.frozen:
+                # Try some alternate paths in bundled app
+                alternate_paths = [
+                    Path(sys.executable).parent / "templates" / "admin.html",
+                    Path(sys.executable).parent / "admin.html",
+                    Path(sys.executable).parent / "Contents" / "Resources" / "templates" / "admin.html",
+                ]
+                for alt_path in alternate_paths:
+                    logger.info(f"Trying alternate path: {alt_path}")
+                    if alt_path.exists():
+                        template_path = alt_path
+                        logger.info(f"Found template at alternate path: {template_path}")
+                        break
+                else:
+                    # List actual directory contents for debugging
+                    exec_dir = Path(sys.executable).parent
+                    logger.error(f"Executable directory: {exec_dir}")
+                    logger.error(f"Executable directory contents: {list(exec_dir.iterdir())}")
+            
+            if not template_path.exists():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Admin interface template not found at {template_path}"
+                )
         
         with open(template_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
         
         return HTMLResponse(content=html_content)
+    
+    @app.post("/v1/system/shutdown")
+    async def shutdown_server():
+        """Gracefully shutdown the server."""
+        import asyncio
+        import os
+        
+        def shutdown():
+            """Shutdown the server."""
+            logger.info("Shutdown requested via API")
+            # This will trigger the lifespan cleanup
+            os._exit(0)
+        
+        # Schedule shutdown after a short delay to allow response to be sent
+        asyncio.get_event_loop().call_later(1.0, shutdown)
+        
+        return {"message": "Server shutting down"}
+    
+    @app.post("/v1/system/restart")
+    async def restart_server():
+        """Restart the server with updated settings."""
+        import asyncio
+        import os
+        import sys
+        import subprocess
+        
+        def restart():
+            """Restart the server."""
+            logger.info("Restart requested via API")
+            
+            # Try to restart using the same command line arguments
+            try:
+                # Get the current command line
+                python_executable = sys.executable
+                script_args = sys.argv
+                
+                # Start new process
+                subprocess.Popen([python_executable] + script_args)
+                
+                # Exit current process
+                os._exit(0)
+            except Exception as e:
+                logger.error(f"Failed to restart: {e}")
+                # Fallback to shutdown
+                os._exit(0)
+        
+        # Schedule restart after a short delay to allow response to be sent
+        asyncio.get_event_loop().call_later(1.0, restart)
+        
+        return {"message": "Server restarting with updated settings"}
+    
+    @app.get("/v1/debug/model/{model_id:path}")
+    async def debug_model_info(model_id: str):
+        """Debug endpoint to inspect model card content for size estimation troubleshooting."""
+        try:
+            hf_client = get_huggingface_client()
+            
+            # Get raw model info
+            from huggingface_hub import model_info
+            model = model_info(model_id)
+            
+            # Extract all relevant fields for debugging
+            debug_info = {
+                "model_id": model_id,
+                "description": getattr(model, 'description', None),
+                "tags": getattr(model, 'tags', []),
+                "library_name": getattr(model, 'library_name', None),
+                "pipeline_tag": getattr(model, 'pipeline_tag', None),
+                "card_data": getattr(model, 'card_data', None),
+                "size_estimation": None,
+                "debug_log": []
+            }
+            
+            # Try our size estimation with debug logging
+            try:
+                model_name = model.id.lower()
+                description = getattr(model, 'description', '') or ''
+                
+                debug_info["debug_log"].append(f"Model name (lower): {model_name}")
+                debug_info["debug_log"].append(f"Description length: {len(description)}")
+                debug_info["debug_log"].append(f"Description content: {repr(description[:500])}")
+                
+                # Test our regex patterns
+                import re
+                param_patterns = [
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s+param',
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s+parameter', 
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s+model',
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s+weights',
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s*-?\s*param',
+                    r'Parameters?:\s*(\d+(?:\.\d+)?)\s*[Bb]',
+                    r'Model size:\s*(\d+(?:\.\d+)?)\s*[Bb]',
+                    r'(\d+(?:\.\d+)?)\s*[Bb](?:illion)?\s*parameter',
+                ]
+                
+                param_count_billions = None
+                for i, pattern in enumerate(param_patterns):
+                    matches = re.findall(pattern, description, re.IGNORECASE)
+                    debug_info["debug_log"].append(f"Pattern {i+1} '{pattern}': {matches}")
+                    if matches:
+                        param_count_billions = float(matches[0])
+                        debug_info["debug_log"].append(f"Found parameter count: {param_count_billions}B")
+                        break
+                
+                # Test quantization detection
+                quantization_info = {
+                    "detected_bits": 16,  # default
+                    "indicators": []
+                }
+                
+                if "4bit" in model_name or "4-bit" in model_name:
+                    quantization_info["detected_bits"] = 4
+                    quantization_info["indicators"].append("4bit/4-bit")
+                elif "8bit" in model_name or "8-bit" in model_name:
+                    quantization_info["detected_bits"] = 8
+                    quantization_info["indicators"].append("8bit/8-bit")
+                
+                debug_info["quantization"] = quantization_info
+                
+                if param_count_billions:
+                    bits_per_param = quantization_info["detected_bits"]
+                    base_memory_gb = (param_count_billions * 1e9 * bits_per_param) / (8 * 1024**3)
+                    total_memory_gb = base_memory_gb * 1.25
+                    
+                    debug_info["size_estimation"] = {
+                        "param_count_billions": param_count_billions,
+                        "bits_per_param": bits_per_param,
+                        "base_memory_gb": base_memory_gb,
+                        "total_memory_gb": total_memory_gb,
+                        "calculation": f"{param_count_billions}B × {bits_per_param}bit ÷ 8 ÷ 1024³ × 1.25 = {total_memory_gb:.2f}GB"
+                    }
+                else:
+                    debug_info["debug_log"].append("No parameter count found in description")
+                
+                # Also check safetensors metadata 
+                debug_info["debug_log"].append("Checking safetensors metadata...")
+                try:
+                    if hasattr(model, 'safetensors') and model.safetensors:
+                        debug_info["debug_log"].append(f"Found safetensors metadata: {model.safetensors}")
+                        for file_name, metadata in model.safetensors.items():
+                            debug_info["debug_log"].append(f"File {file_name}: {metadata}")
+                            if isinstance(metadata, dict):
+                                if 'total' in metadata:
+                                    total_params = metadata.get('total', 0)
+                                    debug_info["debug_log"].append(f"Found 'total' in metadata: {total_params}")
+                                    if total_params > 1000000:
+                                        params_in_billions = total_params / 1e9
+                                        debug_info["debug_log"].append(f"Calculated parameter count: {params_in_billions}B")
+                    else:
+                        debug_info["debug_log"].append("No safetensors metadata found")
+                except Exception as e:
+                    debug_info["debug_log"].append(f"Error checking safetensors: {str(e)}")
+                
+            except Exception as e:
+                debug_info["debug_log"].append(f"Error in size estimation: {str(e)}")
+            
+            return debug_info
+            
+        except Exception as e:
+            logger.error(f"Error debugging model {model_id}: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error debugging model: {str(e)}"
+            )
     
     return app
