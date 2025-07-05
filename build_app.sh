@@ -43,7 +43,36 @@ echo "✅ All critical dependencies found"
 
 # Clean previous builds
 echo "🧹 Cleaning previous builds..."
-rm -rf build/ dist/ *.spec
+rm -rf build/ dist/ *.spec app_icon.icns
+
+# Create app icon from PNG
+echo "🎨 Creating app icon from ~/Downloads/icon.png..."
+if [ -f ~/Downloads/icon.png ]; then
+    # Create iconset directory
+    mkdir -p app_icon.iconset
+    
+    # Generate different icon sizes using sips (built into macOS)
+    sips -z 16 16 ~/Downloads/icon.png --out app_icon.iconset/icon_16x16.png
+    sips -z 32 32 ~/Downloads/icon.png --out app_icon.iconset/icon_16x16@2x.png
+    sips -z 32 32 ~/Downloads/icon.png --out app_icon.iconset/icon_32x32.png
+    sips -z 64 64 ~/Downloads/icon.png --out app_icon.iconset/icon_32x32@2x.png
+    sips -z 128 128 ~/Downloads/icon.png --out app_icon.iconset/icon_128x128.png
+    sips -z 256 256 ~/Downloads/icon.png --out app_icon.iconset/icon_128x128@2x.png
+    sips -z 256 256 ~/Downloads/icon.png --out app_icon.iconset/icon_256x256.png
+    sips -z 512 512 ~/Downloads/icon.png --out app_icon.iconset/icon_256x256@2x.png
+    sips -z 512 512 ~/Downloads/icon.png --out app_icon.iconset/icon_512x512.png
+    sips -z 1024 1024 ~/Downloads/icon.png --out app_icon.iconset/icon_512x512@2x.png
+    
+    # Convert to icns format
+    iconutil -c icns app_icon.iconset -o app_icon.icns
+    
+    # Clean up temporary iconset
+    rm -rf app_icon.iconset
+    
+    echo "✅ App icon created: app_icon.icns"
+else
+    echo "⚠️  Warning: ~/Downloads/icon.png not found, using default icon"
+fi
 
 # Build the app using PyInstaller directly
 echo "🔨 Building app bundle with PyInstaller..."
@@ -51,12 +80,22 @@ echo "🔨 Building app bundle with PyInstaller..."
 # Find MLX path for data files
 MLX_PATH=$(pip show mlx | grep Location | cut -d ' ' -f 2)/mlx
 
+# Check if we have a custom icon
+ICON_PARAM=""
+if [ -f "app_icon.icns" ]; then
+    ICON_PARAM="--icon=app_icon.icns"
+    echo "📱 Using custom app icon"
+else
+    echo "📱 Using default icon"
+fi
+
 pyinstaller src/mlx_gui/app_main.py \
     --name="MLX-GUI" \
     --onedir \
     --windowed \
     --noconfirm \
     --clean \
+    $ICON_PARAM \
     --hidden-import=mlx \
     --hidden-import=mlx_lm \
     --hidden-import=mlx.core \
@@ -111,6 +150,22 @@ pyinstaller src/mlx_gui/app_main.py \
     --target-arch=arm64 \
     --osx-bundle-identifier="org.matthewrogers.mlx-gui" \
     --log-level=INFO
+
+# Fix the Info.plist to make it a menu bar app (no dock icon)
+echo "🔧 Converting to menu bar app (removing dock icon)..."
+INFO_PLIST="dist/MLX-GUI.app/Contents/Info.plist"
+
+if [ -f "$INFO_PLIST" ]; then
+    # Add LSUIElement=true to make it a menu bar app
+    /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$INFO_PLIST" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$INFO_PLIST"
+    
+    echo "✅ App converted to menu bar app (no dock icon)"
+    echo "   - App will only appear in the menu bar"
+    echo "   - No dock icon will be shown"
+else
+    echo "⚠️  Warning: Could not find Info.plist at $INFO_PLIST"
+fi
 
 # Check if build was successful
 if [ -d "dist/MLX-GUI.app" ]; then
