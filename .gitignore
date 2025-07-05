@@ -245,4 +245,9 @@ generation_config.json
 *.tar
 *.tar.gz
 *.rar
-*.7z 
+*.7z
+
+# Keep MLX-GUI assets
+!src/mlx_gui/assets/
+!src/mlx_gui/assets/*.png
+!src/mlx_gui/assets/*.ico 

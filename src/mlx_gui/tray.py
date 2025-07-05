@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import webbrowser
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -21,7 +22,8 @@ class MLXTrayApp(rumps.App):
     """MLX-GUI system tray application for macOS."""
     
     def __init__(self, port: int = 8000, host: str = "127.0.0.1"):
-        super().__init__("MLX", icon="🧠", title="MLX")
+        # Use simple text instead of icon - much cleaner!
+        super().__init__("MLX", title="MLX")
         self.port = port
         self.host = host
         self.base_url = f"http://{host}:{port}"
@@ -41,7 +43,7 @@ class MLXTrayApp(rumps.App):
         self.admin_item = rumps.MenuItem("Open Admin Interface", callback=self.open_admin)
         self.unload_item = rumps.MenuItem("Unload All Models", callback=self.unload_all_models)
         self.separator2 = rumps.MenuItem("---", callback=None)
-        self.quit_item = rumps.MenuItem("Quit MLX-GUI", callback=self.quit_app)
+        self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
         
         # Add items to menu
         self.menu = [
@@ -58,6 +60,9 @@ class MLXTrayApp(rumps.App):
         # Start status update timer (every 10 seconds)
         self.status_timer = rumps.Timer(self.update_status, 10)
         self.status_timer.start()
+        
+        # Disable the automatic quit button to avoid duplication
+        self.quit_button = None
         
     def start_server_background(self):
         """Start the MLX-GUI server in a background thread."""
@@ -87,7 +92,7 @@ class MLXTrayApp(rumps.App):
                 response = requests.get(f"{self.base_url}/health", timeout=2)
                 if response.status_code == 200:
                     logger.info("Server is ready")
-                    self.title = "MLX ✅"
+                    self.title = "MLX"
                     self.update_status()
                     return True
             except requests.exceptions.RequestException:
@@ -131,12 +136,12 @@ class MLXTrayApp(rumps.App):
                 memory_percent = model_manager.get('memory_usage_percent', 0)
                 self.memory_item.title = f"Memory: {self.memory_usage} ({memory_percent:.1f}%)"
                 
-                # Update tray icon status
+                # Update tray text status
                 if status == 'running':
                     if self.loaded_models_count > 0:
                         self.title = f"MLX ({self.loaded_models_count})"
                     else:
-                        self.title = "MLX ✅"
+                        self.title = "MLX"
                 else:
                     self.title = "MLX ⚠️"
                     
