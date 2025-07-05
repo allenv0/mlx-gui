@@ -7,16 +7,75 @@ import subprocess
 import threading
 import time
 import webbrowser
+import socket
+import os
 from pathlib import Path
 from typing import Optional
 
 import requests
 import rumps
+import uvicorn
 
-from mlx_gui.cli import start as start_server
 from mlx_gui.database import get_database_manager
 
 logger = logging.getLogger(__name__)
+
+# Global lock to prevent multiple tray instances
+_tray_lock_file = None
+
+
+def _acquire_tray_lock():
+    """Acquire a file lock to prevent multiple tray instances."""
+    global _tray_lock_file
+    
+    # Create lock file in user's temp directory
+    import tempfile
+    lock_path = os.path.join(tempfile.gettempdir(), "mlx-gui-tray.lock")
+    
+    try:
+        # Try to create lock file exclusively
+        _tray_lock_file = open(lock_path, 'x')
+        _tray_lock_file.write(str(os.getpid()))
+        _tray_lock_file.flush()
+        return True
+    except FileExistsError:
+        # Lock file already exists, check if process is still running
+        try:
+            with open(lock_path, 'r') as f:
+                pid = int(f.read().strip())
+            
+            # Check if process is still running (macOS/Unix)
+            try:
+                os.kill(pid, 0)  # Signal 0 just checks if process exists
+                logger.warning(f"Another tray instance is already running (PID: {pid})")
+                return False
+            except OSError:
+                # Process doesn't exist, remove stale lock file
+                os.unlink(lock_path)
+                return _acquire_tray_lock()  # Try again
+                
+        except (ValueError, IOError):
+            # Invalid lock file, remove it
+            try:
+                os.unlink(lock_path)
+                return _acquire_tray_lock()  # Try again
+            except OSError:
+                pass
+        
+        return False
+
+
+def _release_tray_lock():
+    """Release the tray lock file."""
+    global _tray_lock_file
+    
+    if _tray_lock_file:
+        try:
+            _tray_lock_file.close()
+            os.unlink(_tray_lock_file.name)
+        except OSError:
+            pass
+        _tray_lock_file = None
 
 
 class MLXTrayApp(rumps.App):
@@ -109,15 +168,28 @@ class MLXTrayApp(rumps.App):
         try:
             logger.info(f"Starting MLX-GUI server on {self.host}:{self.port}")
             self.server_running = True
-            # Start the server (this will block)
-            start_server(
-                port=self.port,
+            
+            # Import server module here to avoid circular imports
+            from mlx_gui.server import create_app
+            fastapi_app = create_app()
+            
+            # Configure uvicorn directly (no CLI involvement)
+            config = uvicorn.Config(
+                app=fastapi_app,
                 host=self.host,
-                reload=False,
-                workers=1,
+                port=self.port,
                 log_level="info",
-                database_path=None
+                reload=False,
+                workers=1,  # Single worker to prevent multiple tray instances
+                access_log=False  # Reduce log noise
             )
+            
+            server = uvicorn.Server(config)
+            
+            # Start the server (this will block)
+            import asyncio
+            asyncio.run(server.serve())
+            
         except Exception as e:
             logger.error(f"Error starting server: {e}")
             self.server_running = False
@@ -419,6 +491,9 @@ class MLXTrayApp(rumps.App):
             except:
                 pass
             
+            # Release tray lock
+            _release_tray_lock()
+            
             # Force quit
             rumps.quit_application()
     
@@ -447,10 +522,18 @@ class MLXTrayApp(rumps.App):
             logger.info("Received keyboard interrupt, shutting down...")
         finally:
             self.server_running = False
+            # Release tray lock on any exit
+            _release_tray_lock()
 
 
 def run_tray_app(port: int = 8000, host: str = "127.0.0.1"):
     """Run the MLX-GUI tray application."""
+    # Check for existing tray instance
+    if not _acquire_tray_lock():
+        print("Another MLX-GUI tray instance is already running.")
+        logger.warning("Another tray instance is already running, exiting.")
+        return False
+    
     try:
         print(f"Initializing tray app on {host}:{port}")
         app = MLXTrayApp(port=port, host=host)
@@ -473,6 +556,9 @@ def run_tray_app(port: int = 8000, host: str = "127.0.0.1"):
         import traceback
         traceback.print_exc()
         return False
+    finally:
+        # Always release the lock when exiting
+        _release_tray_lock()
     
     return True
 

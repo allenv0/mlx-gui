@@ -55,7 +55,7 @@ class Model(Base):
     version = Column(String)
     model_type = Column(String, nullable=False)
     huggingface_id = Column(String)
-    memory_required_gb = Column(Integer, nullable=False)
+    memory_required_gb = Column(Float, nullable=False)
     status = Column(String, nullable=False, default=ModelStatus.UNLOADED.value)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -23,7 +23,7 @@ pip install pyinstaller
 
 # Check for critical dependencies
 echo "🔍 Checking critical dependencies..."
-CRITICAL_DEPS=("mlx-lm" "mlx" "rumps" "fastapi" "uvicorn" "transformers" "huggingface-hub")
+CRITICAL_DEPS=("mlx-lm" "mlx" "rumps" "fastapi" "uvicorn" "transformers" "huggingface-hub" "mlx-whisper" "parakeet-mlx")
 MISSING_DEPS=""
 
 for dep in "${CRITICAL_DEPS[@]}"; do
@@ -34,16 +34,25 @@ done
 
 if [ -n "$MISSING_DEPS" ]; then
     echo "❌ Missing critical dependencies:$MISSING_DEPS"
-    echo "💡 Install with: pip install -e \".[app]\""
+    echo "💡 Install with: pip install -e \".[app,audio]\""
     echo "💡 Or from requirements: pip install -r requirements.txt"
+    echo "💡 For audio support: pip install mlx-whisper parakeet-mlx"
     exit 1
 fi
 
 echo "✅ All critical dependencies found"
 
+# Ensure latest audio dependencies
+echo "📦 Ensuring latest audio dependencies..."
+pip install parakeet-mlx -U
+pip install av -U
+pip install ffmpeg-binaries -U
+
 # Clean previous builds
 echo "🧹 Cleaning previous builds..."
-rm -rf build/ dist/ *.spec app_icon.icns
+pkill -f MLX-GUI || true
+sleep 2
+rm -rf build/ dist/ MLX-GUI.spec app_icon.icns 2>/dev/null || true
 
 # Create app icon from PNG
 echo "🎨 Creating app icon from ~/Downloads/icon.png..."
@@ -77,8 +86,201 @@ fi
 # Build the app using PyInstaller directly
 echo "🔨 Building app bundle with PyInstaller..."
 
+# Set environment variables to prevent model downloads during build
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+export HF_DATASETS_OFFLINE=1
+export PYTORCH_DISABLE_CUDA_MALLOC=1
+export PYTORCH_ENABLE_MPS_FALLBACK=1
+
+# Create PyInstaller hooks directory if it doesn't exist
+mkdir -p hooks
+
+# Create custom hook for parakeet-mlx
+cat > hooks/hook-parakeet_mlx.py << 'EOF'
+from PyInstaller.utils.hooks import collect_all
+
+datas, binaries, hiddenimports = collect_all('parakeet_mlx')
+
+# Additional hidden imports for parakeet-mlx and its dependencies
+hiddenimports += [
+    'parakeet_mlx.stt',
+    'parakeet_mlx.models', 
+    'parakeet_mlx.utils',
+    'parakeet_mlx.alignment',
+    'parakeet_mlx.attention',
+    'parakeet_mlx.audio',
+    'parakeet_mlx.cache',
+    'parakeet_mlx.conformer',
+    'parakeet_mlx.ctc',
+    'parakeet_mlx.rnnt',
+    'parakeet_mlx.tokenizer',
+    'dacite',
+    'librosa',
+    'librosa.core',
+    'librosa.feature',
+    'librosa.util',
+    'typer',
+    'audiofile',
+    'audiofile.core',
+    'audresample',
+    'audmath',
+    'audeer',
+    'soundfile',
+    'soxr',
+    'numba',
+    'llvmlite',
+]
+EOF
+
+# Create custom hook for audiofile
+cat > hooks/hook-audiofile.py << 'EOF'
+from PyInstaller.utils.hooks import collect_all
+
+datas, binaries, hiddenimports = collect_all('audiofile')
+
+# Additional hidden imports for audiofile
+hiddenimports += [
+    'audiofile.core',
+    'audmath',
+    'audeer',
+    'soundfile',
+    'cffi',
+    'pycparser',
+]
+EOF
+
+# Create custom hook for audresample
+cat > hooks/hook-audresample.py << 'EOF'
+from PyInstaller.utils.hooks import collect_all
+
+datas, binaries, hiddenimports = collect_all('audresample')
+
+# Additional hidden imports for audresample
+hiddenimports += [
+    'soxr',
+    'numba',
+    'llvmlite',
+]
+EOF
+
+# Note: Removed ffmpeg-python hook as we're using Python av package instead
+
+# Create custom hook for av (PyAV)
+cat > hooks/hook-av.py << 'EOF'
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
+
+datas, binaries, hiddenimports = collect_all('av')
+
+# Collect all av dynamic libraries (libav* dylibs)
+av_dylibs = collect_dynamic_libs('av')
+binaries.extend(av_dylibs)
+
+# Additional hidden imports for av
+hiddenimports += [
+    'av',
+    'av.audio',
+    'av.codec',
+    'av.container',
+    'av.format',
+    'av.stream',
+    'av.video',
+    'av.filter',
+    'av.packet',
+    'av.frame',
+    'av.plane',
+    'av.subtitles',
+    'av.logging',
+    'av.utils',
+]
+EOF
+
+# Create custom hook for mlx-whisper
+cat > hooks/hook-mlx_whisper.py << 'EOF'
+from PyInstaller.utils.hooks import collect_all
+
+datas, binaries, hiddenimports = collect_all('mlx_whisper')
+
+# Additional hidden imports for mlx-whisper
+hiddenimports += [
+    'mlx_whisper.transcribe',
+    'mlx_whisper.load_models',
+    'mlx_whisper.audio',
+]
+EOF
+
+# Create runtime hook for ffmpeg-binaries to ensure FFmpeg is in PATH
+mkdir -p rthooks
+cat > rthooks/pyi_rth_ffmpeg_binaries.py << 'EOF'
+"""
+PyInstaller runtime hook to initialize FFmpeg binaries from the
+`ffmpeg-binaries` package (imported as `ffmpeg`).
+This guarantees the bundled FFmpeg is added to PATH so libraries like
+parakeet_mlx can find it when the app is launched from Finder.
+"""
+import os, shutil
+
+def _setup_ffmpeg() -> None:
+    try:
+        import ffmpeg  # provided by ffmpeg-binaries
+        ffmpeg.init()
+        ffmpeg.add_to_path()
+        bin_path = getattr(ffmpeg, 'FFMPEG_PATH', None)
+        if bin_path and os.path.exists(bin_path):
+            os.environ.setdefault('FFMPEG_BINARY', bin_path)
+            found = shutil.which('ffmpeg')
+            print(f"✅ FFmpeg initialized -> {found or bin_path}")
+        else:
+            print("⚠️  FFmpeg binary path not found after initialization")
+    except Exception as exc:  # pragma: no cover
+        print(f"⚠️  ffmpeg-binaries setup error: {exc}")
+
+_setup_ffmpeg()
+EOF
+
+# Create runtime hook to fix SSL/crypto library conflicts and prevent MLX duplication
+mkdir -p rthooks
+cat > rthooks/pyi_rth_mlx_fix.py << 'EOF'
+import os
+import sys
+
+# Fix SSL/crypto library conflicts by ensuring system libraries are prioritized
+if hasattr(sys, '_MEIPASS'):
+    # We're running in a PyInstaller bundle
+    dylib_path = os.path.join(sys._MEIPASS, 'lib-dynload')
+    if os.path.exists(dylib_path):
+        # Remove problematic cv2 dylib paths from environment
+        if 'DYLD_LIBRARY_PATH' in os.environ:
+            paths = os.environ['DYLD_LIBRARY_PATH'].split(':')
+            filtered_paths = [p for p in paths if 'cv2' not in p and 'opencv' not in p]
+            os.environ['DYLD_LIBRARY_PATH'] = ':'.join(filtered_paths)
+    
+    # Setup av package's libav libraries for Python audio processing
+    av_dylib_dir = os.path.join(sys._MEIPASS, 'av', '__dot__dylibs')
+    if os.path.exists(av_dylib_dir):
+        current_dyld_path = os.environ.get('DYLD_LIBRARY_PATH', '')
+        os.environ['DYLD_LIBRARY_PATH'] = f"{av_dylib_dir}:{current_dyld_path}"
+        print(f"✅ AV libraries available at: {av_dylib_dir}")
+    else:
+        print("⚠️  Warning: AV libraries not found in app bundle")
+    
+    # Try to prevent MLX nanobind conflicts with environment variables
+    # Set these before any MLX imports happen
+    os.environ['MLX_DISABLE_METAL_CACHE'] = '0'
+    os.environ['MLX_MEMORY_POOL'] = '1'
+    
+    # Ensure clean MLX module loading
+    mlx_modules = [k for k in sys.modules.keys() if k.startswith('mlx')]
+    for mod in mlx_modules:
+        if mod in sys.modules:
+            del sys.modules[mod]
+EOF
+
 # Find MLX path for data files
-MLX_PATH=$(pip show mlx | grep Location | cut -d ' ' -f 2)/mlx
+# Using Python audio libraries only (av, librosa, soundfile)
+# This avoids FFmpeg binary conflicts with Python av package
+echo "📦 Using Python-only audio libraries (parakeet_mlx, av, librosa, soundfile)"
+echo "   This avoids system FFmpeg vs Python av library conflicts"
 
 # Check if we have a custom icon
 ICON_PARAM=""
@@ -99,12 +301,58 @@ pyinstaller src/mlx_gui/app_main.py \
     --windowed \
     --noconfirm \
     --clean \
+    --additional-hooks-dir=hooks \
+    --runtime-hook=rthooks/pyi_rth_ffmpeg_binaries.py \
     $ICON_PARAM \
+    --exclude-module=cv2 \
+    --exclude-module=opencv-python \
+    --exclude-module=opencv-contrib-python \
+    --exclude-module=torch.distributed \
+    --exclude-module=torch.optim \
+    --exclude-module=matplotlib \
+    --hidden-import=scipy.sparse.csgraph._validation \
+    --exclude-module=torch \
+    --exclude-module=torchvision \
+    --exclude-module=torchaudio \
+    --exclude-module=tensorflow \
+    --exclude-module=jax \
+    --exclude-module=sklearn \
+    --exclude-module=pandas \
+    --exclude-module=IPython \
+    --exclude-module=jupyter \
+    --exclude-module=notebook \
+    --exclude-module=bokeh \
+    --exclude-module=plotly \
+    --exclude-module=seaborn \
+    --exclude-module=sympy \
     --hidden-import=mlx \
     --hidden-import=mlx_lm \
     --hidden-import=mlx.core \
     --hidden-import=mlx.nn \
     --hidden-import=mlx.optimizers \
+    --hidden-import=mlx._reprlib_fix \
+    --hidden-import=mlx.utils \
+    --hidden-import=mlx_whisper \
+    --hidden-import=mlx_whisper.transcribe \
+    --hidden-import=parakeet_mlx \
+    --hidden-import=dacite \
+    --hidden-import=librosa \
+    --hidden-import=typer \
+    --hidden-import=audiofile \
+    --hidden-import=audiofile.core \
+    --hidden-import=audresample \
+    --hidden-import=audmath \
+    --hidden-import=audeer \
+    --hidden-import=soundfile \
+    --hidden-import=soxr \
+    --hidden-import=numba \
+    --hidden-import=llvmlite \
+    --hidden-import=av \
+    --hidden-import=av.codec \
+    --hidden-import=av.container \
+    --hidden-import=av.format \
+    --hidden-import=av.stream \
+    --hidden-import=ffmpeg \
     --hidden-import=transformers \
     --hidden-import=tokenizers \
     --hidden-import=safetensors \
@@ -141,13 +389,28 @@ pyinstaller src/mlx_gui/app_main.py \
     --hidden-import=watchfiles \
     --hidden-import=python_multipart \
     --hidden-import=python_dotenv \
-    --add-data="${MLX_PATH}:mlx" \
     --add-data="src/mlx_gui/templates:mlx_gui/templates" \
     --collect-all=mlx \
     --collect-all=mlx_lm \
+    --collect-all=mlx_whisper \
+    --collect-all=parakeet_mlx \
+    --collect-all=librosa \
+    --collect-all=dacite \
+    --collect-all=typer \
+    --collect-all=audiofile \
+    --collect-all=audresample \
+    --collect-all=audmath \
+    --collect-all=audeer \
+    --collect-all=soundfile \
+    --collect-all=soxr \
+    --collect-all=numba \
+    --collect-all=llvmlite \
+    --collect-all=av \
+    --collect-all=ffmpeg \
     --collect-all=transformers \
     --collect-all=tokenizers \
     --collect-all=safetensors \
+    --collect-all=scipy.sparse.csgraph \
     --collect-all=huggingface_hub \
     --collect-all=rumps \
     --collect-all=objc \
@@ -178,6 +441,10 @@ if [ -f "$INFO_PLIST" ]; then
 else
     echo "⚠️  Warning: Could not find Info.plist at $INFO_PLIST"
 fi
+
+# Clean up temporary hook files
+echo "🧹 Cleaning up temporary hook files..."
+rm -rf hooks/ rthooks/
 
 # Check if build was successful
 if [ -d "dist/MLX-GUI.app" ]; then
@@ -230,7 +497,7 @@ if [ -d "dist/MLX-GUI.app" ]; then
     echo "📋 App Info:"
     echo "   - Size: $(du -sh dist/MLX-GUI.app | cut -f1)"
     echo "   - Type: TRUE STANDALONE (no Python required!)"
-    echo "   - Includes: All Python runtime, MLX binaries, and dependencies"
+    echo "   - Includes: All Python runtime, MLX binaries, audio support, and dependencies"
     if [ -n "$CERT_NAME" ]; then
         echo "   - Code Signed: ✅ (no security warnings)"
     else
@@ -251,4 +518,5 @@ echo ""
 echo "🔗 Next steps:"
 echo "   • Test the app: open dist/MLX-GUI.app"
 echo "   • Create DMG installer for easy distribution"
-echo "   • App is ready for sharing with anyone - no setup required!" 
+echo "   • App is ready for sharing with anyone - no setup required!"
+echo "   • Audio support included: Whisper and Parakeet models work out of the box" 

@@ -179,13 +179,19 @@
                     <!-- Category buttons -->
                     <div class="mb-6">
                         <div class="flex flex-wrap gap-2">
-                            <button onclick="loadPopularModels()" class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm">
-                                <i class="fas fa-fire mr-1"></i>Popular
+                            <button onclick="loadPopularChat()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm">
+                                <i class="fas fa-comments mr-1"></i>Text
                             </button>
-                            <button onclick="loadCompatibleModels()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm">
+                            <button onclick="loadPopularSTT()" class="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-lg text-sm" style="background-color: #ea580c !important;">
+                                <i class="fas fa-microphone mr-1"></i>STT
+                            </button>
+                            <button onclick="loadVisionModels()" class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm" style="background-color: #9333ea !important;">
+                                <i class="fas fa-eye mr-1"></i>Multimodal
+                            </button>
+                            <button onclick="loadCompatibleModels()" class="bg-teal-600 hover:bg-teal-700 text-white px-4 py-2 rounded-lg text-sm" style="background-color: #0d9488 !important;">
                                 <i class="fas fa-check mr-1"></i>Compatible
                             </button>
-                            <button onclick="loadSmallModels()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm">
+                            <button onclick="loadSmallModels()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm">
                                 <i class="fas fa-feather mr-1"></i>Small (&lt;10GB)
                             </button>
                         </div>
@@ -427,6 +433,26 @@
             }
         }
 
+        function getModelTypeClass(modelType) {
+            switch (modelType) {
+                case 'text': return 'bg-blue-700 text-blue-300';
+                case 'multimodal': return 'bg-purple-700 text-purple-300';
+                case 'vision': return 'bg-pink-700 text-pink-300';
+                case 'audio': return 'bg-orange-700 text-orange-300';
+                default: return 'bg-gray-700 text-gray-300';
+            }
+        }
+
+        function getModelTypeLabel(modelType) {
+            switch (modelType) {
+                case 'text': return 'Text';
+                case 'multimodal': return 'Multimodal';
+                case 'vision': return 'Vision';
+                case 'audio': return 'Audio';
+                default: return modelType || 'Unknown';
+            }
+        }
+
         // API functions
         async function apiCall(endpoint, options = {}) {
             try {
@@ -614,13 +640,62 @@
             }
         }
 
-        async function loadPopularModels() {
+        async function loadPopularChat() {
             try {
-                showLoading('Loading popular models...');
-                const response = await apiCall('/v1/discover/popular?limit=20');
-                renderDiscoveryResults(response.models || []);
+                showLoading('Loading popular chat models...');
+                const response = await apiCall('/v1/discover/categories');
+                const chatModels = response.categories['Popular Chat'] || [];
+                const modelDetails = await Promise.all(
+                    chatModels.slice(0, 10).map(async (modelId) => {
+                        try {
+                            const detail = await apiCall(`/v1/discover/models/${encodeURIComponent(modelId)}`);
+                            return detail;
+                        } catch (e) {
+                            return null;
+                        }
+                    })
+                );
+                renderDiscoveryResults(modelDetails.filter(m => m !== null));
             } catch (error) {
-                showToast('Failed to load popular models', 'error');
+                showToast('Failed to load popular chat models', 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+
+        async function loadPopularSTT() {
+            try {
+                showLoading('Loading STT models...');
+                const response = await apiCall('/v1/discover/categories');
+                const sttModels = response.categories['Popular STT'] || [];
+                const modelDetails = await Promise.all(
+                    sttModels.slice(0, 10).map(async (modelId) => {
+                        try {
+                            const detail = await apiCall(`/v1/discover/models/${encodeURIComponent(modelId)}`);
+                            return detail;
+                        } catch (e) {
+                            return null;
+                        }
+                    })
+                );
+                renderDiscoveryResults(modelDetails.filter(m => m !== null));
+            } catch (error) {
+                showToast('Failed to load STT models', 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function loadVisionModels() {
+            try {
+                showLoading('Loading vision models...');
+                // Use the dedicated vision models endpoint
+                const response = await apiCall('/v1/discover/vision?limit=10');
+                const visionModels = response.models || [];
+                renderDiscoveryResults(visionModels);
+            } catch (error) {
+                showToast('Failed to load vision models', 'error');
             } finally {
                 hideLoading();
             }
@@ -676,7 +751,7 @@
                                         ${model.name}
                                     </a>
                                 </h3>
-                                <span class="ml-2 px-2 py-1 text-xs bg-blue-700 text-blue-300 rounded">${model.model_type}</span>
+                                <span class="ml-2 px-2 py-1 text-xs ${getModelTypeClass(model.model_type)} rounded">${getModelTypeLabel(model.model_type)}</span>
                                 ${model.mlx_compatible ? '<span class="ml-2 px-2 py-1 text-xs bg-green-700 text-green-300 rounded">MLX</span>' : ''}
                             </div>
                             <p class="text-sm text-gray-400 mb-2">${model.description || 'No description available'}</p>

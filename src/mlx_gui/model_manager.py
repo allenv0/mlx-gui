@@ -5,6 +5,7 @@ Handles model lifecycle, queue management, and MLX-LM integration.
 
 import asyncio
 import logging
+import os
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -288,6 +289,79 @@ class ModelManager:
         except Exception as e:
             logger.error(f"Error updating model status in database: {e}")
     
+    def _calculate_actual_memory_usage(self, model_path: str) -> float:
+        """Calculate the actual memory usage based on file sizes + overhead."""
+        total_size_bytes = 0
+        
+        try:
+            # Handle both local paths and HuggingFace model IDs
+            actual_path = self._resolve_model_path(model_path)
+            
+            # Walk through all files in the model directory
+            for root, dirs, files in os.walk(actual_path):
+                for file in files:
+                    # Count all model-related files
+                    if file.endswith(('.safetensors', '.bin', '.pth', '.pt', '.gguf', '.npz')):
+                        file_path = os.path.join(root, file)
+                        if os.path.exists(file_path):
+                            total_size_bytes += os.path.getsize(file_path)
+            
+            # Convert to GB
+            file_size_gb = total_size_bytes / (1024**3)
+            
+            # Add MLX overhead (25% for inference, activations, etc.)
+            # Audio models might need less overhead, text models might need more
+            if "whisper" in model_path.lower() or "parakeet" in model_path.lower():
+                overhead_multiplier = 1.15  # 15% overhead for audio models
+            else:
+                overhead_multiplier = 1.25  # 25% overhead for text models
+                
+            actual_memory_gb = file_size_gb * overhead_multiplier
+            
+            # Round to one decimal place
+            actual_memory_gb = round(actual_memory_gb, 1)
+            
+            logger.info(f"Model {model_path} -> {actual_path} file size: {file_size_gb:.1f}GB, "
+                       f"with overhead: {actual_memory_gb:.1f}GB "
+                       f"(multiplier: {overhead_multiplier})")
+            
+            return max(actual_memory_gb, 0.1)  # Minimum 0.1GB
+            
+        except Exception as e:
+            logger.warning(f"Could not calculate actual memory usage for {model_path}: {e}")
+            # Fallback to a reasonable default
+            return 2.0
+    
+    def _resolve_model_path(self, model_path: str) -> str:
+        """Resolve model path to actual filesystem location."""
+        # If it's already a local path that exists, use it
+        if os.path.exists(model_path):
+            return model_path
+        
+        # If it looks like a HuggingFace model ID, find it in cache
+        if "/" in model_path and not os.path.exists(model_path):
+            # Convert HF model ID to cache path
+            cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "mlx-gui")
+            
+            # Convert model ID to cache directory name
+            # "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit" -> "models--lmstudio-community--DeepSeek-R1-0528-Qwen3-8B-MLX-4bit"
+            cache_name = "models--" + model_path.replace("/", "--")
+            cache_path = os.path.join(cache_dir, cache_name)
+            
+            if os.path.exists(cache_path):
+                # Find the actual model files in snapshots subdirectory
+                snapshots_dir = os.path.join(cache_path, "snapshots")
+                if os.path.exists(snapshots_dir):
+                    # Get the first (and usually only) snapshot directory
+                    snapshot_dirs = [d for d in os.listdir(snapshots_dir) if os.path.isdir(os.path.join(snapshots_dir, d))]
+                    if snapshot_dirs:
+                        actual_path = os.path.join(snapshots_dir, snapshot_dirs[0])
+                        logger.debug(f"Resolved HF model {model_path} to {actual_path}")
+                        return actual_path
+        
+        # Fallback: return original path
+        return model_path
+    
     def _check_memory_constraints(self, required_memory_gb: float) -> bool:
         """Check if we can load a model with the required memory."""
         system_monitor = get_system_monitor()
@@ -340,8 +414,17 @@ class ModelManager:
             inference_engine = get_inference_engine()
             mlx_wrapper = inference_engine.load_model(model_name, model_path)
             
-            # Update memory usage with actual estimate
-            actual_memory = mlx_wrapper.config.get('estimated_memory_gb', model_record.memory_required_gb)
+            # Calculate actual file size + overhead for this model
+            actual_memory = self._calculate_actual_memory_usage(model_path)
+            
+            # Update database with actual memory usage
+            db_manager = get_database_manager()
+            with db_manager.get_session() as session:
+                model_record = session.query(Model).filter(Model.name == model_name).first()
+                if model_record:
+                    model_record.memory_required_gb = actual_memory
+                    session.commit()
+                    logger.info(f"Updated {model_name} memory requirement in DB: {actual_memory:.1f}GB")
             
             loaded_model = LoadedModel(
                 model_id=model_name,
@@ -568,6 +651,17 @@ class ModelManager:
         inference_engine = get_inference_engine()
         async for token in inference_engine.generate_stream(model_name, prompt, config):
             yield token
+        
+        # Update model usage in database after streaming completes
+        try:
+            db_manager = get_database_manager()
+            with db_manager.get_session() as session:
+                model_record = session.query(Model).filter(Model.name == model_name).first()
+                if model_record:
+                    model_record.increment_use_count()
+                    session.commit()
+        except Exception as e:
+            logger.error(f"Error updating model usage for streaming: {e}")
     
     def get_model_for_inference(self, model_name: str) -> Optional[LoadedModel]:
         """Get a loaded model for inference (returns None if not loaded)."""

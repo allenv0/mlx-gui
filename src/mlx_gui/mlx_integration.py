@@ -17,9 +17,36 @@ from mlx_lm.sample_utils import make_sampler, make_logits_processors
 from huggingface_hub import snapshot_download
 import numpy as np
 
+# Audio model imports (optional)
+try:
+    import mlx_whisper
+    HAS_MLX_WHISPER = True
+except ImportError:
+    HAS_MLX_WHISPER = False
+
+try:
+    import mlx_audio
+    HAS_MLX_AUDIO = True
+except ImportError:
+    HAS_MLX_AUDIO = False
+
+try:
+    import parakeet_mlx
+    HAS_PARAKEET_MLX = True
+except ImportError:
+    HAS_PARAKEET_MLX = False
+
 from mlx_gui.huggingface_integration import get_huggingface_client
 
 logger = logging.getLogger(__name__)
+
+# Log audio library status after logger is defined
+if not HAS_MLX_WHISPER:
+    logger.warning("mlx-whisper not installed - Whisper models not supported")
+if not HAS_MLX_AUDIO:
+    logger.warning("mlx-audio not installed - Audio models not supported")
+if not HAS_PARAKEET_MLX:
+    logger.warning("parakeet-mlx not installed - Parakeet models not supported")
 
 
 @dataclass
@@ -47,7 +74,7 @@ class GenerationResult:
 
 
 class MLXModelWrapper:
-    """Wrapper for MLX model with unified interface."""
+    """Base wrapper for MLX models with unified interface."""
     
     def __init__(self, model, tokenizer, model_path: str, config: Dict[str, Any]):
         self.model = model
@@ -55,7 +82,7 @@ class MLXModelWrapper:
         self.model_path = model_path
         self.config = config
         self.model_type = config.get("model_type", "text-generation")
-        
+    
     def generate(self, prompt: str, config: GenerationConfig) -> GenerationResult:
         """Generate text synchronously."""
         import time
@@ -149,6 +176,182 @@ class MLXModelWrapper:
             await asyncio.sleep(0)
 
 
+class MLXWhisperWrapper(MLXModelWrapper):
+    """Specialized wrapper for MLX-Whisper models."""
+    
+    def __init__(self, model_path: str, config: Dict[str, Any]):
+        # Whisper models don't use tokenizers in the same way
+        super().__init__(None, None, model_path, config)
+        self.model_type = "whisper"
+        self.whisper_model = None
+        
+    def load_whisper_model(self):
+        """Load the Whisper model using mlx-whisper."""
+        if not HAS_MLX_WHISPER:
+            raise ImportError("mlx-whisper is required for Whisper models. Install with: pip install mlx-whisper")
+        
+        try:
+            # Extract model name from path for mlx-whisper
+            model_name = self.model_path.split("/")[-1] if "/" in self.model_path else self.model_path
+            # Remove common prefixes/suffixes
+            if model_name.endswith("-mlx"):
+                model_name = model_name[:-4]
+            if model_name.startswith("whisper-"):
+                model_name = model_name[8:]
+            
+            logger.info(f"Loading Whisper model: {model_name}")
+            self.whisper_model = mlx_whisper.load_model(model_name, path=self.model_path)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load Whisper model: {e}")
+            return False
+    
+    def transcribe_audio(self, audio_file_path: str, **kwargs):
+        """Transcribe audio file using MLX-Whisper."""
+        if not self.whisper_model:
+            if not self.load_whisper_model():
+                raise RuntimeError("Whisper model not loaded")
+        
+        try:
+            result = mlx_whisper.transcribe(
+                audio=audio_file_path,
+                model=self.whisper_model,
+                **kwargs
+            )
+            return result
+        except Exception as e:
+            logger.error(f"Whisper transcription failed: {e}")
+            raise
+
+
+class MLXParakeetWrapper(MLXModelWrapper):
+    """Specialized wrapper for Parakeet models using parakeet-mlx."""
+    
+    def __init__(self, model_path: str, config: Dict[str, Any]):
+        super().__init__(None, None, model_path, config)
+        self.model_type = "audio"
+        self.parakeet_model = None
+        
+    def load_parakeet_model(self):
+        """Load the Parakeet model using parakeet-mlx."""
+        if not HAS_PARAKEET_MLX:
+            raise ImportError("parakeet-mlx is required for Parakeet models. Install with: pip install parakeet-mlx")
+        
+        try:
+            import parakeet_mlx
+            
+            logger.info(f"Loading Parakeet model from: {self.model_path}")
+            
+            # Load the Parakeet model using from_pretrained
+            self.parakeet_model = parakeet_mlx.from_pretrained(self.model_path)
+            
+            logger.info(f"Successfully loaded Parakeet model")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load Parakeet model: {e}")
+            return False
+    
+    def transcribe_audio(self, audio_file_path: str, **kwargs):
+        """Transcribe audio using Parakeet model."""
+        if not self.parakeet_model:
+            if not self.load_parakeet_model():
+                raise RuntimeError("Parakeet model not loaded")
+        
+        try:
+            # Filter kwargs to only include supported parameters for Parakeet
+            supported_params = {}
+            if 'chunk_duration' in kwargs:
+                supported_params['chunk_duration'] = kwargs['chunk_duration']
+            if 'overlap_duration' in kwargs:
+                supported_params['overlap_duration'] = kwargs['overlap_duration']
+            
+            # Use the Parakeet model to transcribe
+            result = self.parakeet_model.transcribe(audio_file_path, **supported_params)
+            
+            # The result is an AlignedResult object, extract the text
+            if hasattr(result, 'sentences'):
+                # Combine all sentences into one text
+                text_parts = []
+                for sentence in result.sentences:
+                    if hasattr(sentence, 'text'):
+                        text_parts.append(sentence.text)
+                    elif hasattr(sentence, 'content'):
+                        text_parts.append(sentence.content)
+                transcribed_text = " ".join(text_parts)
+                return {"text": transcribed_text}
+            elif hasattr(result, 'text'):
+                return {"text": result.text}
+            else:
+                return {"text": str(result)}
+                
+        except Exception as e:
+            logger.error(f"Parakeet transcription failed: {e}")
+            raise
+
+
+class MLXAudioWrapper(MLXModelWrapper):
+    """Specialized wrapper for other MLX-Audio models (non-Parakeet)."""
+    
+    def __init__(self, model_path: str, config: Dict[str, Any]):
+        super().__init__(None, None, model_path, config)
+        self.model_type = "audio"
+        self.audio_model = None
+        
+    def load_audio_model(self):
+        """Load the audio model using mlx-audio."""
+        if not HAS_MLX_AUDIO:
+            raise ImportError("mlx-audio is required for audio models. Install with: pip install mlx-audio")
+        
+        try:
+            logger.info(f"Audio model ready: {self.model_path}")
+            self.model_subtype = "stt"
+            self.audio_model = "loaded"  # Placeholder
+            return True
+        except Exception as e:
+            logger.error(f"Failed to load audio model: {e}")
+            return False
+    
+    def transcribe_audio(self, audio_file_path: str, **kwargs):
+        """Transcribe audio using MLX-Audio STT models."""
+        if not self.audio_model:
+            if not self.load_audio_model():
+                raise RuntimeError("Audio model not loaded")
+        
+        try:
+            import tempfile
+            import os
+            from mlx_audio.stt.generate import generate
+            
+            # Create a temporary output file
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp_file:
+                temp_output_path = temp_file.name
+            
+            try:
+                # Call the generate function with model path and audio file
+                generate(
+                    model_path=self.model_path,
+                    audio_path=audio_file_path,
+                    output_path=temp_output_path,
+                    format="txt",
+                    verbose=False
+                )
+                
+                # Read the transcribed text from the output file
+                with open(temp_output_path, 'r') as f:
+                    transcribed_text = f.read().strip()
+                
+                return {"text": transcribed_text}
+                
+            finally:
+                # Clean up the temporary file
+                if os.path.exists(temp_output_path):
+                    os.unlink(temp_output_path)
+                    
+        except Exception as e:
+            logger.error(f"Audio transcription failed: {e}")
+            raise
+
+
 class MLXLoader:
     """Handles loading models with MLX-LM."""
     
@@ -191,7 +394,7 @@ class MLXLoader:
             raise
     
     def load_model(self, model_path: str) -> MLXModelWrapper:
-        """Load a model using MLX-LM."""
+        """Load a model using appropriate MLX library."""
         try:
             logger.info(f"Loading MLX model from {model_path}")
             
@@ -199,18 +402,11 @@ class MLXLoader:
             if not os.path.exists(model_path):
                 raise FileNotFoundError(f"Model path does not exist: {model_path}")
             
-            # Load model and tokenizer using MLX-LM
-            try:
-                model, tokenizer = load(model_path)
-            except KeyError as e:
-                if str(e) == "'model'":
-                    # This is a known bug in MLX-LM's gemma3n implementation
-                    # Try loading with a different model class or skip problematic models
-                    raise ValueError(f"Model '{model_path}' has incompatible format for MLX-LM. This appears to be a gemma3n model with a known MLX-LM compatibility issue.")
-                else:
-                    raise
+            # Detect model type from path/config
+            model_type = self._detect_model_type(model_path)
+            logger.info(f"Detected model type: {model_type}")
             
-            # Try to load config
+            # Load config first to get additional info
             config = {}
             config_path = os.path.join(model_path, "config.json")
             if os.path.exists(config_path):
@@ -222,14 +418,45 @@ class MLXLoader:
             memory_usage = self._estimate_model_memory(model_path)
             config['estimated_memory_gb'] = memory_usage
             
-            wrapper = MLXModelWrapper(
-                model=model,
-                tokenizer=tokenizer,
-                model_path=model_path,
-                config=config
-            )
+            # Load appropriate model type
+            if model_type == "whisper":
+                logger.info("Loading as Whisper model")
+                wrapper = MLXWhisperWrapper(model_path=model_path, config=config)
+                if not wrapper.load_whisper_model():
+                    raise RuntimeError("Failed to load Whisper model")
+                
+            elif model_type == "audio":
+                if "parakeet" in model_path.lower():
+                    logger.info("Loading as Parakeet model")
+                    wrapper = MLXParakeetWrapper(model_path=model_path, config=config)
+                    if not wrapper.load_parakeet_model():
+                        raise RuntimeError("Failed to load Parakeet model")
+                else:
+                    logger.info("Loading as Audio model")
+                    wrapper = MLXAudioWrapper(model_path=model_path, config=config)
+                    if not wrapper.load_audio_model():
+                        raise RuntimeError("Failed to load audio model")
+                
+            else:
+                # Standard text generation model
+                logger.info("Loading as text generation model")
+                try:
+                    model, tokenizer = load(model_path)
+                except KeyError as e:
+                    if str(e) == "'model'":
+                        # This is a known bug in MLX-LM's gemma3n implementation
+                        raise ValueError(f"Model '{model_path}' has incompatible format for MLX-LM. This appears to be a gemma3n model with a known MLX-LM compatibility issue.")
+                    else:
+                        raise
+                
+                wrapper = MLXModelWrapper(
+                    model=model,
+                    tokenizer=tokenizer,
+                    model_path=model_path,
+                    config=config
+                )
             
-            logger.info(f"Successfully loaded model from {model_path}")
+            logger.info(f"Successfully loaded {model_type} model from {model_path}")
             logger.info(f"Estimated memory usage: {memory_usage:.1f}GB")
             
             return wrapper
@@ -237,6 +464,49 @@ class MLXLoader:
         except Exception as e:
             logger.error(f"Error loading model from {model_path}: {e}")
             raise
+    
+    def _detect_model_type(self, model_path: str) -> str:
+        """Detect the type of model from path and contents."""
+        # Check path for model type indicators
+        path_lower = model_path.lower()
+        
+        # Whisper models
+        if "whisper" in path_lower:
+            return "whisper"
+        
+        # Parakeet and other audio models
+        if any(keyword in path_lower for keyword in ["parakeet", "speech", "stt", "asr"]):
+            return "audio"
+        
+        # Check config.json for additional hints
+        try:
+            config_path = os.path.join(model_path, "config.json")
+            if os.path.exists(config_path):
+                import json
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                
+                # Check for audio-specific architecture types
+                arch = config.get("architectures", [])
+                if arch:
+                    arch_str = str(arch[0]).lower()
+                    if "whisper" in arch_str:
+                        return "whisper"
+                    if any(keyword in arch_str for keyword in ["speech", "audio", "parakeet"]):
+                        return "audio"
+                
+                # Check model type field
+                model_type = config.get("model_type", "").lower()
+                if "whisper" in model_type:
+                    return "whisper"
+                if any(keyword in model_type for keyword in ["speech", "audio"]):
+                    return "audio"
+        
+        except Exception as e:
+            logger.debug(f"Could not read config for model type detection: {e}")
+        
+        # Default to text generation
+        return "text"
     
     def load_from_hub(self, model_id: str, token: Optional[str] = None) -> MLXModelWrapper:
         """Load a model directly from HuggingFace Hub."""

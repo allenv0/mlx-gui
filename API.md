@@ -544,6 +544,153 @@ Update a specific setting.
 
 ---
 
+## Audio API
+
+### Audio Transcription
+
+#### `POST /v1/audio/transcriptions`
+OpenAI-compatible audio transcription endpoint supporting Whisper and Parakeet models.
+
+**Request (multipart/form-data):**
+- `file` (required): Audio file (wav, mp3, m4a, flac, etc.)
+- `model` (required): Model to use for transcription
+- `language` (optional): Language of the audio (ISO-639-1 format)
+- `prompt` (optional): Initial prompt to guide transcription
+- `response_format` (optional): Format of response (`json`, `text`, `verbose_json`, `srt`, `vtt`)
+- `temperature` (optional): Sampling temperature (0.0 to 1.0)
+
+**Supported Models:**
+- `whisper-1` → `whisper-small-mlx` (alias for OpenAI compatibility)
+- `whisper-small`, `whisper-medium`, `whisper-large` → MLX Whisper variants
+- `parakeet-tdt-0-6b-v2` → MLX-Community Parakeet model
+- Any installed MLX audio model
+
+**Example Request:**
+```bash
+curl -X POST "http://localhost:8000/v1/audio/transcriptions" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@audio.wav" \
+  -F "model=parakeet-tdt-0-6b-v2" \
+  -F "response_format=json"
+```
+
+**Response (JSON format):**
+```json
+{
+  "text": "Hello, this is a test of the audio transcription system."
+}
+```
+
+**Response (text format):**
+```
+Hello, this is a test of the audio transcription system.
+```
+
+**Response (verbose_json format):**
+```json
+{
+  "text": "Hello, this is a test of the audio transcription system.",
+  "segments": [
+    {
+      "id": 0,
+      "start": 0.0,
+      "end": 3.5,
+      "text": "Hello, this is a test of the audio transcription system."
+    }
+  ]
+}
+```
+
+**Audio Model Installation:**
+Before using audio transcription, install the required models:
+
+```bash
+# Install Parakeet model (recommended)
+curl -X POST http://localhost:8000/v1/models/install \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_id": "mlx-community/parakeet-tdt-0.6b-v2",
+    "name": "parakeet-tdt-0-6b-v2"
+  }'
+
+# Install Whisper model
+curl -X POST http://localhost:8000/v1/models/install \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_id": "mlx-community/whisper-small-mlx",
+    "name": "whisper-small-mlx"
+  }'
+```
+
+**Error Responses:**
+- `400`: Invalid audio file or model not loaded
+- `404`: Audio model not found
+- `500`: Transcription failed
+
+### Audio Speech (Text-to-Speech)
+
+#### `POST /v1/audio/speech`
+Generate speech from text (endpoint defined, implementation pending).
+
+**Request Body:**
+```json
+{
+  "model": "tts-1",
+  "input": "Hello, world!",
+  "voice": "alloy",
+  "response_format": "mp3",
+  "speed": 1.0
+}
+```
+
+**Response:** Audio file (implementation pending)
+
+---
+
+## Audio Model Support
+
+### Supported Audio Libraries
+MLX-GUI supports multiple audio processing libraries:
+
+- **MLX-Whisper** (`mlx-whisper>=0.12.0`)
+  - OpenAI Whisper models optimized for Apple Silicon
+  - Automatic speech recognition (ASR)
+  - Multiple language support
+
+- **Parakeet-MLX** (`parakeet-mlx`)
+  - Advanced speech-to-text models
+  - High accuracy transcription
+  - Optimized for MLX framework
+
+### Audio Model Types
+- **Whisper Models**: `whisper-tiny`, `whisper-small`, `whisper-medium`, `whisper-large`
+- **Parakeet Models**: `parakeet-tdt-0.6b-v2` (Time-Delay Transformer)
+- **Custom Audio Models**: Any MLX-compatible audio model
+
+### Installation Requirements
+Audio support requires additional dependencies:
+
+```bash
+# Install audio dependencies
+pip install mlx-whisper>=0.12.0
+pip install parakeet-mlx
+
+# Or install with audio support
+pip install mlx-gui[audio]
+```
+
+### Supported Audio Formats
+- **WAV** (recommended)
+- **MP3**
+- **M4A**
+- **FLAC** 
+- **OGG**
+- **WEBM**
+
+**Note:** Audio files are automatically converted to the appropriate format for processing.
+
+---
+
 ## OpenAI Compatibility
 
 ### Current Support
@@ -560,11 +707,14 @@ MLX-GUI provides **full OpenAI API compatibility** for drop-in replacement:
 - **Token Usage Stats** - Prompt/completion/total token counts
 - **Model Installation** - `POST /v1/models/install` for dynamic model loading
 
+#### ✅ **Audio Support:**
+- **`POST /v1/audio/transcriptions`** - Audio transcription with Whisper and Parakeet models
+- **`POST /v1/audio/speech`** - Text-to-speech (endpoint defined, implementation pending)
+
 #### ❌ **Not Yet Implemented:**
 - Function calling
 - Embeddings
 - Image generation
-- Audio endpoints
 
 ### Drop-in Replacement
 

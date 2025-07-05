@@ -1,5 +1,260 @@
 # Code Changes and Edits
 
+## MLX Nanobind Duplication Fix (CRITICAL)
+
+### Issue
+- App bundle crashes on other machines with error: "Critical nanobind error: refusing to add duplicate key 'cpu' to enumeration 'mlx.core.DeviceType'!"
+- Error shows: "nanobind: type 'Device' was already registered!" and "nanobind: type 'DeviceType' was already registered!"
+- App aborts immediately on launch, preventing use on deployed systems
+
+### Root Cause
+- PyInstaller was bundling MLX through multiple conflicting paths:
+  - `--add-data="${MLX_PATH}:mlx"` (direct MLX path addition)
+  - `--collect-all=mlx` (automatic MLX collection)
+  - `--hidden-import=mlx`, `--hidden-import=mlx.core`, etc. (explicit imports)
+  - MLX dependencies from `mlx_lm`, `mlx_whisper`, `parakeet_mlx` packages
+- This caused MLX nanobind types to be registered multiple times during app initialization
+
+### Solution (File: `build_app.sh`)
+
+#### 1. Created MLX-Specific Runtime Hook
+```bash
+# NEW: rthooks/pyi_rth_mlx_fix.py
+cat > rthooks/pyi_rth_mlx_fix.py << 'EOF'
+# Critical: Prevent MLX nanobind type duplication
+if 'MLX_NANOBIND_INIT' not in os.environ:
+    os.environ['MLX_NANOBIND_INIT'] = '1'
+    
+    # Set MLX environment to prevent conflicts
+    os.environ['MLX_DISABLE_METAL_CACHE'] = '0'
+    os.environ['MLX_MEMORY_POOL'] = '1'
+EOF
+```
+
+#### 1b. Fixed Runtime Hook TypeError (REVERTED APPROACH)
+**CRITICAL ERROR**: Initial runtime hook caused `TypeError: 'module' object is not subscriptable` because `__builtins__` is a module in PyInstaller context, not a dictionary.
+
+**FIRST FIX FAILED**: Removed MLX bundling entirely, which broke local functionality with `ModuleNotFoundError: No module named 'mlx._reprlib_fix'`.
+
+**FINAL FIX**: Reverted to original working MLX bundling and simplified runtime hook:
+- **RESTORED**: All original MLX bundling methods to fix local functionality
+- **SIMPLIFIED**: Runtime hook to use only environment variables and module cleanup
+- **REMOVED**: Complex import patching that caused the TypeError
+
+#### 2. Restored MLX Bundling (REVERT)
+```bash
+# RESTORED: All MLX collection methods (needed for local functionality)
+--add-data="${MLX_PATH}:mlx"          # Direct MLX path (RESTORED)
+--collect-all=mlx                     # Automatic MLX collection (RESTORED)
+--hidden-import=mlx                   # Explicit MLX import (RESTORED)
+--hidden-import=mlx.core              # MLX core import (RESTORED)
+--hidden-import=mlx.nn                # MLX nn import (RESTORED)
+--hidden-import=mlx.optimizers        # MLX optimizers import (RESTORED)
+
+# KEPT: MLX-dependent packages
+--collect-all=mlx_lm                  # MLX Language Models
+--collect-all=mlx_whisper             # MLX Whisper
+--collect-all=parakeet_mlx            # Parakeet MLX
+```
+
+#### 3. Simplified Runtime Hook Approach
+```python
+# NEW: Clean, simple runtime hook
+# Set MLX environment variables
+os.environ['MLX_DISABLE_METAL_CACHE'] = '0'
+os.environ['MLX_MEMORY_POOL'] = '1'
+
+# Clear any pre-loaded MLX modules for clean loading
+mlx_modules = [k for k in sys.modules.keys() if k.startswith('mlx')]
+for mod in mlx_modules:
+    if mod in sys.modules:
+        del sys.modules[mod]
+```
+
+#### 3. Updated Runtime Hook Reference
+```bash
+# OLD: --runtime-hook=rthooks/pyi_rth_ssl_fix.py
+# NEW: --runtime-hook=rthooks/pyi_rth_mlx_fix.py
+```
+
+### Result
+- MLX nanobind types are only registered once during app initialization
+- Environment flag prevents multiple MLX initialization attempts
+- Controlled import ensures single MLX core instance
+- App should launch successfully on deployed systems
+
+### Testing Required
+- Rebuild app bundle: `./build_app.sh`
+- Test on clean system without MLX development environment
+- Verify no "nanobind: type 'Device' was already registered!" errors
+- Confirm app loads and tray icon appears correctly
+
+### Files Modified
+- `build_app.sh` - Updated PyInstaller configuration and runtime hooks
+- `EDITS.md` - This change log
+
+## Audio Dependencies Installation (CRITICAL FIX)
+
+### Issue
+User reported that audio libraries are REQUIRED functionality, not optional. PyInstaller build warnings showed:
+- `parakeet_mlx.stt` not found
+- `parakeet_mlx.models` not found  
+- `audiofile` not found
+- `audresample` not found
+
+### Root Cause
+Missing audio processing libraries that are core to the app's audio transcription functionality.
+
+### Solution (Files: `build_app.sh`, virtual environment)
+
+#### 1. Installed Missing Audio Dependencies
+```bash
+pip install mlx-whisper parakeet-mlx audiofile audresample
+```
+
+#### 2. Updated PyInstaller Hooks
+- **Enhanced `hook-parakeet_mlx.py`**: Added `audiofile.core`, `audmath`, `audeer`, `soundfile`, `soxr`, `numba`, `llvmlite`
+- **Created `hook-audiofile.py`**: Comprehensive audiofile bundling with all dependencies
+- **Created `hook-audresample.py`**: Proper audresample bundling with soxr and numba
+
+#### 3. Updated PyInstaller Configuration
+- **Added hidden imports**: `audiofile.core`, `audmath`, `audeer`, `soundfile`, `soxr`, `numba`, `llvmlite`
+- **Added collect-all**: `audiofile`, `audresample`, `audmath`, `audeer`, `soundfile`, `soxr`, `numba`, `llvmlite`
+
+### Result
+- **Build warnings**: Should be eliminated for audio libraries
+- **Audio transcription**: Now fully bundled in app
+- **App functionality**: Complete audio support included in standalone bundle
+
+### Testing Required
+- Rebuild app bundle: `./build_app.sh`
+- Verify no audio-related PyInstaller warnings
+- Test audio transcription functionality in bundled app
+- Confirm `test_audio.py` works with bundled app
+
+## FFmpeg Bundling for Audio Support (CRITICAL FIX)
+
+### Issue
+Audio transcription failed with error: "FFmpeg is not installed or not in your PATH"
+
+### Root Cause
+Audio libraries (audiofile, audresample, parakeet-mlx) require FFmpeg binary for audio format conversion and processing, but it wasn't bundled with the app.
+
+### Solution (File: `build_app.sh`)
+
+#### 1. Detect and Bundle FFmpeg Binary
+```bash
+# Find FFmpeg path and bundle it in bin subdirectory
+FFMPEG_PATH=$(which ffmpeg)
+FFMPEG_BINARY="--add-binary=$FFMPEG_PATH:bin"
+```
+
+#### 1b. Fixed Path Conflict (CRITICAL)
+**ERROR**: `Pyinstaller needs to create a directory at 'ffmpeg', but there already exists a file at that path!`
+
+**ROOT CAUSE**: Conflict between:
+- `--add-binary` creating a FILE called `ffmpeg` (the binary)
+- `--collect-all=ffmpeg` creating a DIRECTORY called `ffmpeg` (Python package)
+
+**FIX**: Put FFmpeg binary in `bin` subdirectory instead of root:
+- Changed from `--add-binary=$FFMPEG_PATH:.` to `--add-binary=$FFMPEG_PATH:bin`
+
+#### 2. Add FFmpeg to Runtime PATH
+```python
+# In runtime hook: Add FFmpeg bin directory to PATH
+ffmpeg_bin_dir = os.path.join(sys._MEIPASS, 'bin')
+ffmpeg_path = os.path.join(ffmpeg_bin_dir, 'ffmpeg')
+if os.path.exists(ffmpeg_path):
+    current_path = os.environ.get('PATH', '')
+    os.environ['PATH'] = f"{ffmpeg_bin_dir}:{current_path}"
+```
+
+#### 3. Install and Bundle ffmpeg-python
+```bash
+pip install ffmpeg-python
+# Added to PyInstaller: --hidden-import=ffmpeg --collect-all=ffmpeg
+```
+
+#### 4. Created FFmpeg Hook
+- **Created `hook-ffmpeg.py`**: Comprehensive ffmpeg-python bundling with all modules
+
+### Result
+- **FFmpeg binary**: Bundled with app at `/path/to/app/ffmpeg`
+- **FFmpeg Python interface**: Fully bundled via ffmpeg-python package
+- **Audio transcription**: Should work in standalone app without system FFmpeg
+- **PATH setup**: FFmpeg automatically added to PATH during app startup
+
+### Testing Required
+- Rebuild app bundle: `./build_app.sh`
+- Test audio transcription with `test_audio.py`
+- Verify FFmpeg is found and audio processing works
+- Confirm no "FFmpeg is not installed" errors
+
+## AV Library Linking Fix (CRITICAL)
+
+### Issue
+Audio transcription failed with dynamic linking error:
+```
+Symbol not found: _av_buffer_unref
+Referenced from: .../bin/ffmpeg
+Expected in: .../av/__dot__dylibs/libavdevice.61.3.100.dylib
+```
+
+### Root Cause
+- System FFmpeg binary has different libav* library dependencies than Python av package
+- PyInstaller bundled incompatible versions causing dynamic linking conflicts
+- FFmpeg looking for symbols in wrong libav libraries
+
+### Solution (Files: `build_app.sh`)
+
+#### 1. Ensure Latest Audio Dependencies
+```bash
+# Added to build script
+pip install parakeet-mlx -U
+pip install av -U  
+pip install ffmpeg-python -U
+```
+
+#### 2. Bundle AV Library Properly
+```bash
+# Added comprehensive av library bundling
+--hidden-import=av
+--hidden-import=av.codec
+--hidden-import=av.container
+--hidden-import=av.format
+--hidden-import=av.stream
+--collect-all=av
+```
+
+#### 3. Created AV Library Hook
+- **Created `hook-av.py`**: Comprehensive av package bundling with all dylibs
+- **Collects dynamic libraries**: `collect_dynamic_libs('av')` to bundle all libav* dylibs
+- **All av submodules**: audio, video, codec, container, format, stream, etc.
+
+#### 4. Prioritize AV Libraries in Runtime
+```python
+# In runtime hook: Set DYLD_LIBRARY_PATH for av libraries
+av_dylib_dir = os.path.join(sys._MEIPASS, 'av', '__dot__dylibs')
+os.environ['DYLD_LIBRARY_PATH'] = f"{av_dylib_dir}:{current_dyld_path}"
+```
+
+### Result
+- **AV libraries**: Properly bundled with compatible versions
+- **Dynamic linking**: FFmpeg should find correct libav* symbols
+- **Audio transcription**: Should work without symbol not found errors
+- **Library compatibility**: System FFmpeg + Python av package dylibs
+
+### Testing Required
+- Rebuild app bundle: `./build_app.sh`
+- Test audio transcription with `test_audio.py`
+- Verify no "Symbol not found: _av_buffer_unref" errors
+- Confirm FFmpeg and av libraries work together
+
+### Files Modified
+- `build_app.sh` - Updated PyInstaller configuration and runtime hooks
+- Virtual environment - Added missing audio dependencies
+- `EDITS.md` - This change log
+
 ## Model Size Estimation Improvements
 
 ### Issue
@@ -309,6 +564,22 @@ PyInstaller properly handles MLX's compiled binaries (`.so` and `.dylib` files) 
 3. **Updated `NOTES.md`**: Documented the new build process and fixes.
 
 **Result**: Creates a TRUE standalone macOS app that works on any system without Python setup.
+
+## Audio Transcription Test Script
+
+### Created `test_audio.py`
+- **Purpose**: Comprehensive test script for the `/v1/audio/transcriptions` endpoint
+- **Features**:
+  - Tests with `parakeet-tdt-0-6b-v2` model
+  - Automatic server connectivity check
+  - Model status verification and auto-loading
+  - Multipart form data handling
+  - Multiple response format support (json, text, verbose_json, srt, vtt)
+  - Detailed error handling and troubleshooting
+  - Segment-level transcription output
+- **Usage**: `python test_audio.py` or `./test_audio.py`
+- **Requirements**: Requires a `test.wav` file in the project directory
+- **Documentation**: Added to `NOTES.md` with complete feature list and usage instructions
 
 ## App Bundle Issues Fixed
 

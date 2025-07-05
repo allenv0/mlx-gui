@@ -67,6 +67,9 @@ class DatabaseManager:
         
         # Insert default settings if they don't exist
         self._insert_default_settings()
+        
+        # Reset all model statuses to unloaded on startup
+        self._reset_model_statuses()
     
     def _insert_default_settings(self):
         """Insert default application settings."""
@@ -90,6 +93,24 @@ class DatabaseManager:
                     setting.set_typed_value(value)
                     session.add(setting)
             session.commit()
+    
+    def _reset_model_statuses(self):
+        """Reset all model statuses to unloaded on startup."""
+        try:
+            with self.get_session() as session:
+                from mlx_gui.models import Model
+                # Set all models to unloaded status
+                models = session.query(Model).all()
+                for model in models:
+                    if model.status != "unloaded":
+                        model.status = "unloaded"
+                        model.last_unloaded_at = None
+                session.commit()
+                if models:
+                    print(f"🔄 Reset {len(models)} models to unloaded status on startup")
+        except Exception as e:
+            # Don't crash on startup if this fails
+            print(f"Warning: Could not reset model statuses: {e}")
     
     def get_session(self) -> Session:
         """Get a database session."""
@@ -139,6 +160,94 @@ class DatabaseManager:
         """Create a backup of the database."""
         import shutil
         shutil.copy2(self.database_path, backup_path)
+    
+    def update_model_sizes_from_disk(self):
+        """Update model memory requirements based on actual file sizes."""
+        try:
+            with self.get_session() as session:
+                from mlx_gui.models import Model
+                import os
+                
+                models = session.query(Model).all()
+                updated_count = 0
+                
+                for model in models:
+                    if model.path:
+                        # Resolve the actual path (handle HuggingFace cache paths)
+                        actual_path = self._resolve_model_path(model.path)
+                        
+                        if os.path.exists(actual_path):
+                            # Calculate actual file size
+                            total_size_bytes = 0
+                            for root, dirs, files in os.walk(actual_path):
+                                for file in files:
+                                    if file.endswith(('.safetensors', '.bin', '.pth', '.pt', '.gguf', '.npz')):
+                                        file_path = os.path.join(root, file)
+                                        if os.path.exists(file_path):
+                                            total_size_bytes += os.path.getsize(file_path)
+                            
+                            if total_size_bytes > 0:
+                                # Convert to GB and add overhead
+                                file_size_gb = total_size_bytes / (1024**3)
+                                
+                                # Different overhead for different model types
+                                if "whisper" in model.path.lower() or "parakeet" in model.path.lower():
+                                    overhead_multiplier = 1.15  # 15% overhead for audio models
+                                else:
+                                    overhead_multiplier = 1.25  # 25% overhead for text models
+                                
+                                new_memory_gb = max(file_size_gb * overhead_multiplier, 0.1)
+                                
+                                # Round to one decimal place
+                                new_memory_gb = round(new_memory_gb, 1)
+                                
+                                # Update if significantly different (more than 0.5GB difference)
+                                if abs(model.memory_required_gb - new_memory_gb) > 0.5:
+                                    old_memory = model.memory_required_gb
+                                    model.memory_required_gb = new_memory_gb
+                                    updated_count += 1
+                                    print(f"📊 Updated {model.name}: {old_memory:.1f}GB → {new_memory_gb:.1f}GB")
+                        else:
+                            print(f"⚠️  Model path not found: {model.name} -> {actual_path}")
+                
+                session.commit()
+                
+                if updated_count > 0:
+                    print(f"✅ Updated memory requirements for {updated_count} models")
+                else:
+                    print("ℹ️  No models needed size updates")
+                    
+        except Exception as e:
+            print(f"Warning: Could not update model sizes: {e}")
+    
+    def _resolve_model_path(self, model_path: str) -> str:
+        """Resolve model path to actual filesystem location."""
+        # If it's already a local path that exists, use it
+        if os.path.exists(model_path):
+            return model_path
+        
+        # If it looks like a HuggingFace model ID, find it in cache
+        if "/" in model_path and not os.path.exists(model_path):
+            # Convert HF model ID to cache path
+            cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "mlx-gui")
+            
+            # Convert model ID to cache directory name
+            # "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit" -> "models--lmstudio-community--DeepSeek-R1-0528-Qwen3-8B-MLX-4bit"
+            cache_name = "models--" + model_path.replace("/", "--")
+            cache_path = os.path.join(cache_dir, cache_name)
+            
+            if os.path.exists(cache_path):
+                # Find the actual model files in snapshots subdirectory
+                snapshots_dir = os.path.join(cache_path, "snapshots")
+                if os.path.exists(snapshots_dir):
+                    # Get the first (and usually only) snapshot directory
+                    snapshot_dirs = [d for d in os.listdir(snapshots_dir) if os.path.isdir(os.path.join(snapshots_dir, d))]
+                    if snapshot_dirs:
+                        actual_path = os.path.join(snapshots_dir, snapshot_dirs[0])
+                        return actual_path
+        
+        # Fallback: return original path
+        return model_path
     
     def get_database_size(self) -> int:
         """Get database file size in bytes."""

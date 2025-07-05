@@ -89,6 +89,27 @@ def main():
         
         print("Starting MLX-GUI tray app...")
         
+        # Check for audio dependencies
+        audio_modules = []
+        try:
+            import mlx_whisper
+            audio_modules.append("MLX-Whisper")
+        except ImportError:
+            pass
+        
+        try:
+            import parakeet_mlx
+            audio_modules.append("Parakeet-MLX")
+        except ImportError:
+            pass
+        
+        if audio_modules:
+            print(f"Audio support: ✅ {', '.join(audio_modules)} available")
+        else:
+            print("Audio support: ⚠️  No audio libraries found")
+            print("Install with: pip install mlx-whisper parakeet-mlx")
+            print("MLX-GUI will work without audio support, but audio transcription won't be available.")
+        
         # Start with default settings
         success = run_tray_app(port=8000, host="127.0.0.1")
         

@@ -28,8 +28,8 @@ console = Console()
 
 @app.command()
 def start(
-    port: int = typer.Option(8000, "--port", "-p", help="Port to run the server on"),
-    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host to bind to"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="Port to run the server on (overrides database setting)"),
+    host: Optional[str] = typer.Option(None, "--host", "-h", help="Host to bind to (overrides database setting)"),
     reload: bool = typer.Option(False, "--reload", "-r", help="Enable auto-reload for development"),
     workers: int = typer.Option(1, "--workers", "-w", help="Number of worker processes"),
     log_level: str = typer.Option("info", "--log-level", "-l", help="Log level"),
@@ -52,7 +52,6 @@ def start(
     console.print("By Matthew Rogers (@RamboRogers)", style="dim white")
     console.print("https://github.com/RamboRogers/mlx-gui", style="blue")
     console.print()
-    console.print(f"🚀 Starting MLX-GUI server on {host}:{port}", style="green")
     
     # Initialize database
     if database_path:
@@ -61,14 +60,36 @@ def start(
     db_manager = get_database_manager()
     console.print(f"📊 Database initialized at: {db_manager.database_path}", style="blue")
     
+    # Get port and host from database settings, allow CLI overrides
+    actual_port = port if port is not None else db_manager.get_setting("server_port", 8000)
+    
+    # Handle host setting - check bind_to_all_interfaces setting
+    if host is not None:
+        actual_host = host
+    else:
+        bind_to_all = db_manager.get_setting("bind_to_all_interfaces", False)
+        actual_host = "0.0.0.0" if bind_to_all else "127.0.0.1"
+    
+    console.print(f"🚀 Starting MLX-GUI server on {actual_host}:{actual_port}", style="green")
+    if port is None:
+        console.print(f"   📊 Using port from database setting: {actual_port}", style="dim blue")
+    else:
+        console.print(f"   🔧 Using CLI override port: {actual_port}", style="dim yellow")
+    
+    if host is None:
+        bind_to_all = db_manager.get_setting("bind_to_all_interfaces", False)
+        console.print(f"   📊 Using bind setting from database: {'all interfaces (0.0.0.0)' if bind_to_all else 'localhost only (127.0.0.1)'}", style="dim blue")
+    else:
+        console.print(f"   🔧 Using CLI override host: {actual_host}", style="dim yellow")
+    
     # Create FastAPI app
     fastapi_app = create_app()
     
     # Configure uvicorn
     config = uvicorn.Config(
         app=fastapi_app,
-        host=host,
-        port=port,
+        host=actual_host,
+        port=actual_port,
         log_level=log_level,
         reload=reload,
         workers=workers if not reload else 1,
@@ -260,8 +281,8 @@ def discover(
 
 @app.command()
 def tray(
-    port: int = typer.Option(8000, "--port", "-p", help="Port to run the server on"),
-    host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host to bind to"),
+    port: Optional[int] = typer.Option(None, "--port", "-p", help="Port to run the server on (overrides database setting)"),
+    host: Optional[str] = typer.Option(None, "--host", "-h", help="Host to bind to (overrides database setting)"),
 ):
     """Launch MLX-GUI with macOS system tray interface."""
     # Print ASCII art banner
@@ -282,9 +303,27 @@ def tray(
     console.print()
     console.print("🍎 Starting MLX-GUI with system tray interface...", style="green")
     
+    # Get port and host from database settings, allow CLI overrides
+    db_manager = get_database_manager()
+    actual_port = port if port is not None else db_manager.get_setting("server_port", 8000)
+    
+    # Handle host setting - check bind_to_all_interfaces setting
+    if host is not None:
+        actual_host = host
+    else:
+        bind_to_all = db_manager.get_setting("bind_to_all_interfaces", False)
+        actual_host = "0.0.0.0" if bind_to_all else "127.0.0.1"
+    
+    console.print(f"🚀 Server will run on {actual_host}:{actual_port}", style="blue")
+    if port is None:
+        console.print(f"   📊 Using port from database setting: {actual_port}", style="dim blue")
+    if host is None:
+        bind_to_all = db_manager.get_setting("bind_to_all_interfaces", False)
+        console.print(f"   📊 Using bind setting from database: {'all interfaces (0.0.0.0)' if bind_to_all else 'localhost only (127.0.0.1)'}", style="dim blue")
+    
     try:
         from mlx_gui.tray import run_tray_app
-        success = run_tray_app(port=port, host=host)
+        success = run_tray_app(port=actual_port, host=actual_host)
         if not success:
             sys.exit(1)
     except ImportError as e:
@@ -300,6 +339,19 @@ def tray(
 
 
 @app.command()
+def update_sizes():
+    """Update model memory requirements based on actual file sizes."""
+    console.print("📊 Updating model sizes from disk...", style="blue")
+    
+    try:
+        db_manager = get_database_manager()
+        db_manager.update_model_sizes_from_disk()
+        console.print("✅ Model sizes updated successfully", style="green")
+    except Exception as e:
+        console.print(f"❌ Error updating model sizes: {e}", style="red")
+
+
+@app.command()
 def version():
     """Show version information."""
     from mlx_gui import __version__
@@ -309,9 +361,9 @@ def version():
 def main():
     """Main entry point for the CLI."""
     try:
-        # If no arguments provided, default to start command with defaults
+        # If no arguments provided, default to start command with database settings
         if len(sys.argv) == 1:
-            start(port=8000, host="127.0.0.1", reload=False, workers=1, log_level="info", database_path=None)
+            start(port=None, host=None, reload=False, workers=1, log_level="info", database_path=None)
         else:
             app()
     except KeyboardInterrupt:

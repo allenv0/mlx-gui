@@ -6,14 +6,17 @@ import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, Depends, HTTPException, status, Header
+from fastapi import FastAPI, Depends, HTTPException, status, Header, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import List, Optional, Union, Annotated
 import json
+import tempfile
+import os
+import uuid
 
 from mlx_gui.database import get_db_session, get_database_manager
 from mlx_gui.models import Model, AppSettings
@@ -115,20 +118,69 @@ class ModelInstallRequest(BaseModel):
     name: Optional[str] = None
 
 
-def _format_chat_prompt(messages: List[ChatMessage]) -> str:
-    """Convert chat messages to a formatted prompt optimized for thinking models."""
-    prompt_parts = []
+# Audio API models
+class AudioTranscriptionRequest(BaseModel):
+    """Request model for audio transcription."""
+    model: str = "whisper-1"
+    language: Optional[str] = None
+    prompt: Optional[str] = None
+    response_format: Optional[str] = "json"  # json, text, srt, verbose_json, vtt
+    temperature: Optional[float] = 0.0
+
+
+class AudioTranscriptionResponse(BaseModel):
+    """Response model for audio transcription."""
+    text: str
+
+
+class AudioSpeechRequest(BaseModel):
+    """Request model for text-to-speech."""
+    model: str = "tts-1"  # tts-1, tts-1-hd
+    input: str
+    voice: str = "alloy"  # alloy, echo, fable, onyx, nova, shimmer
+    response_format: Optional[str] = "mp3"  # mp3, opus, aac, flac
+    speed: Optional[float] = 1.0  # 0.25 to 4.0
+
+
+def _get_chat_template_from_hf(model_id: str) -> str:
+    """Fetch chat template from HuggingFace model card."""
+    try:
+        from huggingface_hub import hf_hub_download
+        import json
+        
+        # Download tokenizer_config.json which contains the chat template
+        tokenizer_config_path = hf_hub_download(
+            repo_id=model_id,
+            filename="tokenizer_config.json",
+            local_files_only=False
+        )
+        
+        with open(tokenizer_config_path, 'r') as f:
+            tokenizer_config = json.load(f)
+            
+        chat_template = tokenizer_config.get("chat_template")
+        if chat_template:
+            logger.info(f"Retrieved chat template from HF for {model_id}")
+            return chat_template
+            
+    except Exception as e:
+        logger.debug(f"Could not fetch chat template from HF for {model_id}: {e}")
     
+    return None
+
+
+def _format_chat_prompt(messages: List[ChatMessage], model_name: str = None) -> str:
+    """Convert chat messages to a formatted prompt using the model's chat template."""
+    
+    # Convert our messages to the format expected by chat templates
+    chat_messages = []
     for message in messages:
-        role = message.role
         content = message.content
         
-        # Handle multimodal content
+        # Handle multimodal content - extract text
         if isinstance(content, list):
-            # Extract text and image parts
             text_parts = []
             images = []
-            
             for part in content:
                 if part.type == "text" and part.text:
                     text_parts.append(part.text)
@@ -147,18 +199,115 @@ def _format_chat_prompt(messages: List[ChatMessage]) -> str:
                 
             content = text_content
         
-        # Handle string content (traditional format)
-        if role == "system":
-            prompt_parts.append(f"<|im_start|>system\n{content}<|im_end|>")
-        elif role == "user":
-            prompt_parts.append(f"<|im_start|>user\n{content}<|im_end|>")
-        elif role == "assistant":
-            prompt_parts.append(f"<|im_start|>assistant\n{content}<|im_end|>")
+        chat_messages.append({"role": message.role, "content": content})
     
-    # Add final Assistant prompt with space for thinking
-    prompt_parts.append("<|im_start|>assistant")
+    # Try to use the model's tokenizer chat template if available
+    if model_name:
+        try:
+            from mlx_gui.model_manager import get_model_manager
+            model_manager = get_model_manager()
+            loaded_model = model_manager.get_model_for_inference(model_name)
+            
+            if loaded_model and hasattr(loaded_model.mlx_wrapper, 'tokenizer') and loaded_model.mlx_wrapper.tokenizer:
+                tokenizer = loaded_model.mlx_wrapper.tokenizer
+                
+                # Use the tokenizer's chat template
+                if hasattr(tokenizer, 'apply_chat_template') and tokenizer.chat_template:
+                    try:
+                        formatted_prompt = tokenizer.apply_chat_template(
+                            chat_messages, 
+                            tokenize=False, 
+                            add_generation_prompt=True
+                        )
+                        logger.debug(f"Used tokenizer chat template for {model_name}")
+                        return formatted_prompt
+                    except Exception as e:
+                        logger.warning(f"Failed to apply chat template for {model_name}: {e}")
+        except Exception as e:
+            logger.warning(f"Could not get tokenizer for {model_name}: {e}")
+        
+        # Try to fetch template from HuggingFace if tokenizer failed
+        try:
+            # Get the HuggingFace model ID from the database
+            from mlx_gui.database import get_database_manager
+            from mlx_gui.models import Model
+            
+            db_manager = get_database_manager()
+            with db_manager.get_session() as session:
+                model_record = session.query(Model).filter(Model.name == model_name).first()
+                if model_record and model_record.huggingface_id:
+                    hf_template = _get_chat_template_from_hf(model_record.huggingface_id)
+                    if hf_template:
+                        # Try to apply the template using transformers
+                        try:
+                            from transformers import AutoTokenizer
+                            # Create a temporary tokenizer with the fetched template
+                            temp_tokenizer = AutoTokenizer.from_pretrained(
+                                model_record.huggingface_id,
+                                trust_remote_code=True
+                            )
+                            if hasattr(temp_tokenizer, 'apply_chat_template'):
+                                formatted_prompt = temp_tokenizer.apply_chat_template(
+                                    chat_messages,
+                                    tokenize=False,
+                                    add_generation_prompt=True
+                                )
+                                logger.info(f"Used HF chat template for {model_name}")
+                                return formatted_prompt
+                        except Exception as e:
+                            logger.warning(f"Failed to apply HF chat template for {model_name}: {e}")
+        except Exception as e:
+            logger.debug(f"Could not fetch HF template for {model_name}: {e}")
     
-    return "\n".join(prompt_parts)
+    # Fallback to manual formatting with model-specific templates
+    prompt_parts = []
+    
+    # Detect model type and use appropriate template
+    is_gemma = model_name and "gemma" in model_name.lower()
+    is_phi = model_name and "phi" in model_name.lower()
+    is_qwen = model_name and "qwen" in model_name.lower()
+    
+    for message in chat_messages:
+        role = message["role"]
+        content = message["content"]
+        
+        # Apply model-specific formatting
+        if is_gemma:
+            # Gemma format
+            if role == "system":
+                prompt_parts.append(f"<bos><start_of_turn>system\n{content}<end_of_turn>")
+            elif role == "user":
+                prompt_parts.append(f"<start_of_turn>user\n{content}<end_of_turn>")
+            elif role == "assistant":
+                prompt_parts.append(f"<start_of_turn>model\n{content}<end_of_turn>")
+        elif is_phi:
+            # Phi format (simpler)
+            if role == "system":
+                prompt_parts.append(f"System: {content}")
+            elif role == "user":
+                prompt_parts.append(f"User: {content}")
+            elif role == "assistant":
+                prompt_parts.append(f"Assistant: {content}")
+        else:
+            # ChatML format (default for Qwen and others)
+            if role == "system":
+                prompt_parts.append(f"<|im_start|>system\n{content}<|im_end|>")
+            elif role == "user":
+                prompt_parts.append(f"<|im_start|>user\n{content}<|im_end|>")
+            elif role == "assistant":
+                prompt_parts.append(f"<|im_start|>assistant\n{content}<|im_end|>")
+    
+    # Add final generation prompt
+    if is_gemma:
+        prompt_parts.append("<start_of_turn>model\n")
+    elif is_phi:
+        prompt_parts.append("Assistant:")
+    else:
+        prompt_parts.append("<|im_start|>assistant")
+    
+    formatted_prompt = "\n".join(prompt_parts)
+    logger.info(f"Used fallback template for {model_name}: {'Gemma' if is_gemma else 'Phi' if is_phi else 'ChatML'}")
+    return formatted_prompt
 
 
 @asynccontextmanager
@@ -685,6 +834,42 @@ def create_app() -> FastAPI:
                 detail="Error getting model categories"
             )
     
+    @app.get("/v1/discover/vision")
+    async def discover_vision_models(query: str = "", limit: int = 10):
+        """Discover vision/multimodal models using HuggingFace pipeline filters."""
+        try:
+            hf_client = get_huggingface_client()
+            models = hf_client.search_vision_models(query=query, limit=limit)
+            
+            return {
+                "models": [
+                    {
+                        "id": model.id,
+                        "name": model.name,
+                        "author": model.author,
+                        "downloads": model.downloads,
+                        "likes": model.likes,
+                        "model_type": model.model_type,
+                        "size_gb": model.size_gb,
+                        "estimated_memory_gb": model.estimated_memory_gb,
+                        "mlx_compatible": model.mlx_compatible,
+                        "has_mlx_version": model.has_mlx_version,
+                        "mlx_repo_id": model.mlx_repo_id,
+                        "tags": model.tags,
+                        "description": model.description,
+                        "updated_at": model.updated_at
+                    }
+                    for model in models
+                ],
+                "total": len(models)
+            }
+        except Exception as e:
+            logger.error(f"Error discovering vision models: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error discovering vision models"
+            )
+    
     @app.get("/v1/discover/compatible")
     async def discover_compatible_models(
         query: str = "",
@@ -817,8 +1002,20 @@ def create_app() -> FastAPI:
                         detail=f"Failed to load model '{request.model}'"
                     )
             
+            # Add default system prompt if none provided
+            messages = request.messages
+            has_system_message = any(msg.role == "system" for msg in messages)
+            
+            if not has_system_message:
+                # Add a helpful default system message
+                default_system = ChatMessage(
+                    role="system",
+                    content="You are a helpful AI assistant. Provide clear, accurate, and concise responses."
+                )
+                messages = [default_system] + list(messages)
+            
             # Convert chat messages to prompt
-            prompt = _format_chat_prompt(request.messages)
+            prompt = _format_chat_prompt(messages, request.model)
             
             # Enforce server-side maximum token limit
             MAX_TOKENS_LIMIT = 16384  # 16k max
@@ -865,8 +1062,7 @@ def create_app() -> FastAPI:
                     yield f"data: {first_chunk.model_dump_json()}\n\n"
                     
                     # Stream the generation
-                    inference_engine = get_inference_engine()
-                    async for chunk in inference_engine.generate_stream(request.model, prompt, config):
+                    async for chunk in model_manager.generate_text_stream(request.model, prompt, config):
                         if chunk:
                             stream_chunk = ChatCompletionStreamResponse(
                                 id=completion_id,
@@ -937,6 +1133,217 @@ def create_app() -> FastAPI:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Chat completion failed: {str(e)}"
+            )
+    
+    # Audio endpoints
+    @app.post("/v1/audio/transcriptions")
+    async def create_transcription(
+        file: UploadFile = File(...),
+        model: str = Form("whisper-1"),
+        language: Optional[str] = Form(None),
+        prompt: Optional[str] = Form(None),
+        response_format: str = Form("json"),
+        temperature: float = Form(0.0),
+        api_key: Optional[str] = Depends(validate_api_key),
+        db: Session = Depends(get_db_session)
+    ):
+        """OpenAI-compatible audio transcription endpoint."""
+        try:
+            # Validate audio file
+            if not file.content_type or not file.content_type.startswith('audio/'):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="File must be an audio file"
+                )
+            
+            # Map OpenAI model names to our audio models
+            model_mapping = {
+                "whisper-1": "whisper-small-mlx",
+                "whisper-large": "whisper-large-mlx",
+                "whisper-small": "whisper-small-mlx",
+                "whisper-medium": "whisper-medium-mlx",
+                "whisper-tiny": "whisper-tiny-mlx",
+                "parakeet": "parakeet-tdt-0.6b-v2"
+            }
+            
+            # Get actual model name
+            actual_model_name = model_mapping.get(model, model)
+            
+            # Check if audio model exists and is loaded
+            model_record = db.query(Model).filter(Model.name == actual_model_name).first()
+            if not model_record:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Audio model '{actual_model_name}' not found. Install it first with POST /v1/models/install"
+                )
+            
+            model_manager = get_model_manager()
+            
+            # Check if model is loaded, auto-load if not
+            loaded_model = model_manager.get_model_for_inference(actual_model_name)
+            if not loaded_model:
+                logger.info(f"Audio model {actual_model_name} not loaded, attempting to load...")
+                success = await model_manager.load_model_async(
+                    model_name=actual_model_name,
+                    model_path=model_record.path,
+                    priority=10  # High priority for audio requests
+                )
+                if not success:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=f"Failed to load audio model '{actual_model_name}'"
+                    )
+                
+                # Get the loaded model
+                loaded_model = model_manager.get_model_for_inference(actual_model_name)
+                if not loaded_model:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=f"Audio model '{actual_model_name}' failed to load properly"
+                    )
+            
+            # Check if this is an audio model
+            if not hasattr(loaded_model.mlx_wrapper, 'transcribe_audio'):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Model '{actual_model_name}' is not an audio transcription model"
+                )
+            
+            # Save uploaded file temporarily
+            import tempfile
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+                content = await file.read()
+                temp_file.write(content)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Transcribe using the loaded audio model
+                result = loaded_model.mlx_wrapper.transcribe_audio(
+                    temp_file_path,
+                    language=language,
+                    initial_prompt=prompt,
+                    temperature=temperature
+                )
+                
+                # Update model usage in database
+                try:
+                    model_record = db.query(Model).filter(Model.name == actual_model_name).first()
+                    if model_record:
+                        model_record.increment_use_count()
+                        db.commit()
+                except Exception as e:
+                    logger.error(f"Error updating audio model usage: {e}")
+                
+                # Ensure result has 'text' field
+                if isinstance(result, dict) and 'text' in result:
+                    text_content = result['text']
+                elif isinstance(result, str):
+                    text_content = result
+                else:
+                    text_content = str(result)
+                
+                # Return response based on format
+                if response_format == "json":
+                    return {"text": text_content}
+                elif response_format == "text":
+                    return Response(content=text_content, media_type="text/plain")
+                elif response_format == "verbose_json":
+                    if isinstance(result, dict):
+                        return result
+                    else:
+                        return {"text": text_content}
+                else:
+                    # For srt, vtt formats - basic implementation
+                    return {"text": text_content}
+                    
+            finally:
+                # Clean up temporary file
+                os.unlink(temp_file_path)
+                
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error in audio transcription: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Transcription failed: {str(e)}"
+            )
+    
+    @app.post("/v1/audio/speech")
+    async def create_speech(
+        request: AudioSpeechRequest,
+        api_key: Optional[str] = Depends(validate_api_key)
+    ):
+        """OpenAI-compatible text-to-speech endpoint."""
+        try:
+            # Use MLX Audio for TTS
+            try:
+                import mlx_audio
+            except ImportError:
+                raise HTTPException(
+                    status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                    detail="MLX Audio not installed. Install with: pip install mlx-audio"
+                )
+            
+            # Generate speech
+            # Map OpenAI voices to available models
+            voice_mapping = {
+                "alloy": "kokoro",
+                "echo": "kokoro", 
+                "fable": "kokoro",
+                "onyx": "kokoro",
+                "nova": "kokoro",
+                "shimmer": "kokoro"
+            }
+            
+            model_name = voice_mapping.get(request.voice, "kokoro")
+            
+            # Generate audio
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
+                # Use MLX Audio TTS
+                mlx_audio.tts.generate(
+                    text=request.input,
+                    model=model_name,
+                    output_file=temp_file.name,
+                    speed=request.speed
+                )
+                
+                # Read generated audio
+                with open(temp_file.name, "rb") as audio_file:
+                    audio_content = audio_file.read()
+                
+                # Clean up
+                os.unlink(temp_file.name)
+                
+                # Return audio response
+                media_type_mapping = {
+                    "mp3": "audio/mpeg",
+                    "opus": "audio/opus", 
+                    "aac": "audio/aac",
+                    "flac": "audio/flac",
+                    "wav": "audio/wav"
+                }
+                
+                media_type = media_type_mapping.get(request.response_format, "audio/wav")
+                
+                return Response(
+                    content=audio_content,
+                    media_type=media_type,
+                    headers={
+                        "Content-Disposition": f"attachment; filename=speech.{request.response_format}"
+                    }
+                )
+                
+        except ImportError as e:
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail=f"Text-to-speech not available: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"Error in speech generation: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Speech generation failed: {str(e)}"
             )
     
     @app.get("/v1/models")

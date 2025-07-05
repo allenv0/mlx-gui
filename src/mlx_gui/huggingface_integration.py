@@ -439,7 +439,7 @@ class HuggingFaceClient:
             return 'vision'
         
         # Check for audio models
-        if any(tag in tags_lower for tag in ['audio', 'speech', 'automatic-speech-recognition']):
+        if any(tag in tags_lower for tag in ['audio', 'speech', 'automatic-speech-recognition', 'text-to-speech', 'tts', 'whisper']):
             return 'audio'
         
         # Default to text for language models
@@ -456,11 +456,12 @@ class HuggingFaceClient:
     def get_model_categories(self) -> Dict[str, List[str]]:
         """Get categorized lists of popular MLX models."""
         categories = {
-            'Popular Text Models': [],
+            'Popular Chat': [],
+            'Popular TTS': [],
+            'Popular STT': [],
             'Vision Models': [],
             'Multimodal Models': [],
             'Code Models': [],
-            'Chat Models': [],
             'Small Models (< 10GB)': [],
             'Large Models (> 50GB)': []
         }
@@ -475,14 +476,24 @@ class HuggingFaceClient:
                     categories['Vision Models'].append(model.id)
                 elif model.model_type == 'multimodal':
                     categories['Multimodal Models'].append(model.id)
+                elif model.model_type == 'audio':
+                    # Split audio models into TTS vs STT
+                    if any(keyword in model.id.lower() for keyword in ['tts', 'text-to-speech', 'speech-synthesis', 'kokoro', 'bark', 'f5-tts']):
+                        categories['Popular TTS'].append(model.id)
+                    elif any(keyword in model.id.lower() for keyword in ['whisper', 'stt', 'speech-to-text', 'transcrib', 'asr']):
+                        categories['Popular STT'].append(model.id)
+                    else:
+                        # Default audio models to STT if unclear
+                        categories['Popular STT'].append(model.id)
                 
                 # Check for code models
                 if any(tag in model.tags for tag in ['code', 'coding', 'programming']):
                     categories['Code Models'].append(model.id)
                 
-                # Check for chat models
-                if any(tag in model.tags for tag in ['chat', 'conversational', 'instruct']):
-                    categories['Chat Models'].append(model.id)
+                # Check for chat models (text and multimodal that are conversational)
+                if (model.model_type in ['text', 'multimodal'] and 
+                    any(tag in model.tags for tag in ['chat', 'conversational', 'instruct', 'assistant'])):
+                    categories['Popular Chat'].append(model.id)
                 
                 # Size-based categories
                 if model.size_gb and model.size_gb < 10:
@@ -490,9 +501,12 @@ class HuggingFaceClient:
                 elif model.size_gb and model.size_gb > 50:
                     categories['Large Models (> 50GB)'].append(model.id)
                 
-                # Add to popular text models if not in other categories
-                if model.model_type == 'text' and not any(model.id in cat for cat in categories.values()):
-                    categories['Popular Text Models'].append(model.id)
+                # Add uncategorized text models to Popular Chat if they seem conversational
+                if (model.model_type == 'text' and 
+                    not any(model.id in cat for cat in categories.values()) and
+                    model.id not in categories['Popular Chat']):
+                    # Default text models go to Popular Chat
+                    categories['Popular Chat'].append(model.id)
             
             # Limit each category to top 10
             for category in categories:
@@ -517,6 +531,212 @@ class HuggingFaceClient:
         compatible_models.sort(key=lambda x: x.downloads, reverse=True)
         
         return compatible_models[:20]  # Return top 20
+    
+    def search_audio_models(self, query: str = "", limit: int = 20) -> List[ModelInfo]:
+        """Search specifically for MLX audio models (Whisper, TTS, etc.)."""
+        # Search for audio-related terms
+        audio_queries = []
+        if query:
+            audio_queries.append(f"{query} audio")
+            audio_queries.append(f"{query} speech")
+        else:
+            audio_queries = ["whisper mlx", "tts mlx", "audio mlx", "speech mlx"]
+        
+        all_audio_models = []
+        
+        for audio_query in audio_queries:
+            try:
+                models = self.search_mlx_models(audio_query, limit=limit)
+                for model in models:
+                    # Filter for audio models
+                    if (model.model_type == 'audio' or 
+                        any(tag in model.tags for tag in ['audio', 'speech', 'whisper', 'tts', 'automatic-speech-recognition']) or
+                        any(keyword in model.id.lower() for keyword in ['whisper', 'tts', 'speech', 'audio'])):
+                        if model.id not in [m.id for m in all_audio_models]:
+                            all_audio_models.append(model)
+            except Exception as e:
+                logger.warning(f"Error searching for audio models with query '{audio_query}': {e}")
+                continue
+        
+        # Sort by downloads and return top results
+        all_audio_models.sort(key=lambda x: x.downloads, reverse=True)
+        return all_audio_models[:limit]
+    
+    def search_tts_models(self, query: str = "", limit: int = 10) -> List[ModelInfo]:
+        """Search specifically for Text-to-Speech models."""
+        tts_queries = []
+        if query:
+            tts_queries.append(f"{query} tts")
+            tts_queries.append(f"{query} text-to-speech")
+        else:
+            tts_queries = ["tts mlx", "text-to-speech mlx", "kokoro", "bark mlx", "f5-tts mlx"]
+        
+        tts_models = []
+        for tts_query in tts_queries:
+            try:
+                models = self.search_mlx_models(tts_query, limit=limit)
+                for model in models:
+                    if (any(keyword in model.id.lower() for keyword in ['tts', 'text-to-speech', 'speech-synthesis', 'kokoro', 'bark', 'f5-tts']) or
+                        any(tag in model.tags for tag in ['text-to-speech', 'tts'])):
+                        if model.id not in [m.id for m in tts_models]:
+                            tts_models.append(model)
+            except Exception as e:
+                logger.warning(f"Error searching TTS models with query '{tts_query}': {e}")
+                continue
+        
+        tts_models.sort(key=lambda x: x.downloads, reverse=True)
+        return tts_models[:limit]
+    
+    def search_stt_models(self, query: str = "", limit: int = 10) -> List[ModelInfo]:
+        """Search specifically for Speech-to-Text models."""
+        stt_queries = []
+        if query:
+            stt_queries.append(f"{query} whisper")
+            stt_queries.append(f"{query} stt")
+        else:
+            stt_queries = ["whisper mlx", "stt mlx", "speech-to-text mlx", "transcription mlx"]
+        
+        stt_models = []
+        for stt_query in stt_queries:
+            try:
+                models = self.search_mlx_models(stt_query, limit=limit)
+                for model in models:
+                    if (any(keyword in model.id.lower() for keyword in ['whisper', 'stt', 'speech-to-text', 'transcrib', 'asr']) or
+                        any(tag in model.tags for tag in ['automatic-speech-recognition', 'speech-to-text', 'transcription'])):
+                        if model.id not in [m.id for m in stt_models]:
+                            stt_models.append(model)
+            except Exception as e:
+                logger.warning(f"Error searching STT models with query '{stt_query}': {e}")
+                continue
+        
+        stt_models.sort(key=lambda x: x.downloads, reverse=True)
+        return stt_models[:limit]
+    
+    def search_vision_models(self, query: str = "", limit: int = 10) -> List[ModelInfo]:
+        """Search specifically for Vision/Multimodal models using HuggingFace pipeline filters."""
+        try:
+            vision_models = []
+            models_dict = {}
+            
+            # Method 1: Exact match to HuggingFace URL - pipeline_tag=image-text-to-text&library=mlx&sort=trending
+            try:
+                logger.info("Searching for vision models using HuggingFace pipeline_tag=image-text-to-text, library=mlx")
+                
+                # This matches exactly: https://huggingface.co/models?pipeline_tag=image-text-to-text&library=mlx&sort=trending
+                # Note: HuggingFace API uses "downloads" for trending, not "trending"
+                pipeline_models = list_models(
+                    pipeline_tag="image-text-to-text",
+                    library="mlx",
+                    sort="downloads",
+                    limit=50,  # Get more to filter from
+                    direction=-1,
+                    token=self.token
+                )
+                
+                # Convert generator to list and count
+                pipeline_models_list = list(pipeline_models)
+                logger.info(f"Found {len(pipeline_models_list)} image-text-to-text models with MLX library")
+                
+                for model in pipeline_models_list:
+                    models_dict[model.id] = model
+                    logger.debug(f"Found vision model via pipeline filter: {model.id}")
+                
+            except Exception as e:
+                logger.warning(f"Error using HuggingFace pipeline_tag filter: {e}")
+                
+            # Method 1.5: Try without library filter in case some models aren't tagged properly
+            try:
+                logger.info("Searching for image-text-to-text models without library filter")
+                
+                all_vision_models = list_models(
+                    pipeline_tag="image-text-to-text",
+                    sort="downloads",
+                    limit=100,
+                    direction=-1,
+                    token=self.token
+                )
+                
+                # Convert generator to list and count
+                all_vision_models_list = list(all_vision_models)
+                logger.info(f"Found {len(all_vision_models_list)} total image-text-to-text models")
+                
+                # Filter for MLX-compatible ones manually
+                mlx_count = 0
+                for model in all_vision_models_list:
+                    # Check if model has MLX in tags or is from mlx-community
+                    model_tags = getattr(model, 'tags', []) or []
+                    is_mlx = (any(tag.lower() in self.mlx_tags for tag in model_tags) or 
+                             model.id.startswith('mlx-community/') or
+                             'mlx' in model.id.lower())
+                    
+                    if is_mlx:
+                        models_dict[model.id] = model
+                        mlx_count += 1
+                        logger.debug(f"Found MLX vision model: {model.id}")
+                
+                logger.info(f"Found {mlx_count} MLX-compatible vision models from broader search")
+                
+            except Exception as e:
+                logger.warning(f"Error searching all image-text-to-text models: {e}")
+            
+            # Method 2: Also search by tags for broader coverage
+            try:
+                # Search with MLX tag and vision-related terms
+                tag_models = list_models(
+                    tags=["mlx"],
+                    search="llava",
+                    sort="downloads", 
+                    limit=20,
+                    direction=-1,
+                    token=self.token
+                )
+                
+                # Convert generator to list and count
+                tag_models_list = list(tag_models)
+                logger.info(f"Found {len(tag_models_list)} models with MLX tag and 'llava' search")
+                
+                vision_count = 0
+                for model in tag_models_list:
+                    # Only include if it looks like a vision model
+                    if (hasattr(model, 'pipeline_tag') and model.pipeline_tag == 'image-text-to-text') or \
+                       any(keyword in model.id.lower() for keyword in ['llava', 'vision', 'vl', 'multimodal']):
+                        if model.id not in models_dict:  # Avoid duplicates
+                            models_dict[model.id] = model
+                            vision_count += 1
+                            logger.debug(f"Found vision model via tag search: {model.id}")
+                
+                logger.info(f"Added {vision_count} additional vision models from tag search")
+                
+            except Exception as e:
+                logger.warning(f"Error using tag search: {e}")
+            
+            # Convert to ModelInfo objects
+            models = list(models_dict.values())
+            logger.info(f"Processing {len(models)} total unique vision models")
+            
+            for model in models:
+                try:
+                    info = self._extract_model_info(model)
+                    if info and info.mlx_compatible:
+                        vision_models.append(info)
+                        logger.debug(f"Added vision model: {info.id} (type: {info.model_type})")
+                except Exception as e:
+                    logger.warning(f"Error processing vision model {model.id}: {e}")
+                    continue
+            
+            # Sort by trending/downloads and return top results
+            vision_models.sort(key=lambda x: x.downloads, reverse=True)
+            final_models = vision_models[:limit]
+            
+            logger.info(f"Returning {len(final_models)} vision models")
+            for model in final_models:
+                logger.info(f"  - {model.id} ({model.downloads} downloads)")
+            
+            return final_models
+            
+        except Exception as e:
+            logger.error(f"Error searching vision models: {e}")
+            return []
 
 
 # Global HuggingFace client instance

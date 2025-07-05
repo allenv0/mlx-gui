@@ -11,6 +11,22 @@
 
 **A lightweight RESTful wrapper around Apple's MLX engine for dynamically loading and serving MLX-compatible models.**
 
+>*TLDR - OpenRouter-style v1 API interface for MLX with Ollama-like model management, featuring auto-queuing, on-demand model loading, and multi-user serving capabilities via single mac app.*
+
+
+
+<div align="center">
+<table>
+<th colspan=2>GUI</th>
+<tr><td><img src="media/models.png"></td><td><img src="media/search.png"></td></tr>
+<tr><td><img src="media/status.png"></td><td><img src="media/settings.png"></td></tr>
+<th colspan=2>Mac Native</th>
+<tr><td><img src="media/trayicon.png"></td><td><img src="media/app.png"></td></tr>
+</table>
+</div>
+
+
+
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-Required-orange.svg)](https://support.apple.com/en-us/HT211814)
@@ -24,6 +40,7 @@
 - **🎨 Beautiful Admin Interface** - Modern web GUI for model management
 - **📊 System Monitoring** - Real-time memory usage and system status
 - **🔍 HuggingFace Integration** - Discover and install MLX-compatible models
+- **🎙️ Audio Support** - Speech-to-text with Whisper and Parakeet models
 - **🍎 macOS System Tray** - Native menu bar integration
 - **⚡ OpenAI Compatibility** - Drop-in replacement for OpenAI API
 - **📱 Standalone App** - Packaged macOS app bundle (no Python required)
@@ -86,13 +103,30 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   }'
 ```
 
+#### Audio Transcription
+```bash
+curl -X POST http://localhost:8000/v1/audio/transcriptions \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@audio.wav" \
+  -F "model=parakeet-tdt-0-6b-v2"
+```
+
 #### Install Models
 ```bash
+# Install text model
 curl -X POST http://localhost:8000/v1/models/install \
   -H "Content-Type: application/json" \
   -d '{
     "model_id": "mlx-community/Qwen2.5-7B-Instruct-4bit",
     "name": "qwen-7b-4bit"
+  }'
+
+# Install audio model
+curl -X POST http://localhost:8000/v1/models/install \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_id": "mlx-community/parakeet-tdt-0.6b-v2",
+    "name": "parakeet-tdt-0-6b-v2"
   }'
 ```
 
@@ -124,6 +158,7 @@ Full API documentation is available at `/v1/docs` when the server is running, or
 - `POST /v1/models/install` - Install from HuggingFace
 - `POST /v1/models/{name}/load` - Load model into memory
 - `POST /v1/chat/completions` - OpenAI-compatible chat
+- `POST /v1/audio/transcriptions` - Audio transcription (Whisper/Parakeet)
 - `GET /v1/discover/models` - Search HuggingFace for MLX models
 - `GET /v1/system/status` - System and memory status
 
@@ -138,8 +173,8 @@ cd mlx-gui
 python -m venv .venv
 source .venv/bin/activate
 
-# Install in development mode
-pip install -e ".[dev]"
+# Install in development mode with audio support
+pip install -e ".[dev,audio]"
 
 # Run tests
 pytest
@@ -150,8 +185,8 @@ mlx-gui start --reload
 
 ### Build Standalone App
 ```bash
-# Install build dependencies
-pip install rumps pyinstaller
+# Install build dependencies with audio support
+pip install rumps pyinstaller mlx-whisper parakeet-mlx
 
 # Build macOS app bundle
 ./build_app.sh
