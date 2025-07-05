@@ -1,0 +1,11 @@
+{
+  "model": "qwen3-8b-6bit",
+  "messages": [
+    {
+      "role": "user", 
+      "content": "2+2="
+    }
+  ],
+  "max_tokens": 10,
+  "temperature": 0.0
+}

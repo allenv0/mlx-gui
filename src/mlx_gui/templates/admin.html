@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLX-GUI Admin Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        .glass {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+        .card-hover {
+            transition: all 0.3s ease;
+        }
+        .card-hover:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(0,0,0,0.2);
+        }
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 8px;
+        }
+        .status-loaded { background-color: #10b981; }
+        .status-unloaded { background-color: #6b7280; }
+        .status-loading { background-color: #f59e0b; animation: pulse 2s infinite; }
+        .status-failed { background-color: #ef4444; }
+    </style>
+</head>
+<body class="gradient-bg min-h-screen">
+    <!-- Header -->
+    <nav class="glass shadow-lg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between h-16">
+                <div class="flex items-center">
+                    <i class="fas fa-brain text-white text-2xl mr-3"></i>
+                    <h1 class="text-white text-xl font-bold">MLX-GUI Admin</h1>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <div class="text-white text-sm">
+                        <span id="system-status" class="status-indicator status-loaded"></span>
+                        <span>System Online</span>
+                    </div>
+                    <div class="text-white text-sm">
+                        <i class="fas fa-memory mr-1"></i>
+                        <span id="memory-usage">0GB / 0GB</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Dashboard Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            <!-- System Status Card -->
+            <div class="glass rounded-lg p-6 card-hover">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-server text-green-400 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-300 truncate">System Status</dt>
+                            <dd class="text-lg font-medium text-white" id="system-health">Healthy</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Loaded Models Card -->
+            <div class="glass rounded-lg p-6 card-hover">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-cubes text-blue-400 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-300 truncate">Loaded Models</dt>
+                            <dd class="text-lg font-medium text-white" id="loaded-count">0</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Memory Usage Card -->
+            <div class="glass rounded-lg p-6 card-hover">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-memory text-purple-400 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-300 truncate">Memory Usage</dt>
+                            <dd class="text-lg font-medium text-white" id="memory-percent">0%</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Queue Size Card -->
+            <div class="glass rounded-lg p-6 card-hover">
+                <div class="flex items-center">
+                    <div class="flex-shrink-0">
+                        <i class="fas fa-list text-yellow-400 text-2xl"></i>
+                    </div>
+                    <div class="ml-5 w-0 flex-1">
+                        <dl>
+                            <dt class="text-sm font-medium text-gray-300 truncate">Queue Size</dt>
+                            <dd class="text-lg font-medium text-white" id="queue-size">0</dd>
+                        </dl>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Tabs -->
+        <div class="glass rounded-lg">
+            <!-- Tab Navigation -->
+            <div class="border-b border-gray-600">
+                <nav class="-mb-px flex space-x-8 px-6">
+                    <button class="tab-button active border-b-2 border-blue-400 py-4 px-1 text-blue-400 font-medium text-sm" data-tab="models">
+                        <i class="fas fa-cubes mr-2"></i>Models
+                    </button>
+                    <button class="tab-button border-b-2 border-transparent py-4 px-1 text-gray-300 font-medium text-sm hover:text-white" data-tab="discover">
+                        <i class="fas fa-search mr-2"></i>Discover
+                    </button>
+                    <button class="tab-button border-b-2 border-transparent py-4 px-1 text-gray-300 font-medium text-sm hover:text-white" data-tab="monitor">
+                        <i class="fas fa-chart-line mr-2"></i>Monitor
+                    </button>
+                    <button class="tab-button border-b-2 border-transparent py-4 px-1 text-gray-300 font-medium text-sm hover:text-white" data-tab="settings">
+                        <i class="fas fa-cog mr-2"></i>Settings
+                    </button>
+                </nav>
+            </div>
+
+            <!-- Tab Content -->
+            <div class="p-6">
+                <!-- Models Tab -->
+                <div id="models-tab" class="tab-content">
+                    <div class="flex justify-between items-center mb-6">
+                        <h2 class="text-xl font-bold text-white">Installed Models</h2>
+                        <button onclick="refreshModels()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg">
+                            <i class="fas fa-sync-alt mr-2"></i>Refresh
+                        </button>
+                    </div>
+                    <div id="models-list" class="space-y-4">
+                        <!-- Models will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Discover Tab -->
+                <div id="discover-tab" class="tab-content hidden">
+                    <div class="mb-6">
+                        <h2 class="text-xl font-bold text-white mb-4">Discover MLX Models</h2>
+                        <div class="flex space-x-4">
+                            <div class="flex-1">
+                                <input type="text" id="search-input" placeholder="Search models..." 
+                                       class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg border border-gray-600 focus:border-blue-400 focus:outline-none">
+                            </div>
+                            <button onclick="searchModels()" class="bg-green-600 hover:bg-green-700 text-white px-6 py-2 rounded-lg">
+                                <i class="fas fa-search mr-2"></i>Search
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Category buttons -->
+                    <div class="mb-6">
+                        <div class="flex flex-wrap gap-2">
+                            <button onclick="loadPopularModels()" class="bg-purple-600 hover:bg-purple-700 text-white px-4 py-2 rounded-lg text-sm">
+                                <i class="fas fa-fire mr-1"></i>Popular
+                            </button>
+                            <button onclick="loadCompatibleModels()" class="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm">
+                                <i class="fas fa-check mr-1"></i>Compatible
+                            </button>
+                            <button onclick="loadSmallModels()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm">
+                                <i class="fas fa-feather mr-1"></i>Small (&lt;10GB)
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="discover-results" class="space-y-4">
+                        <!-- Search results will be loaded here -->
+                    </div>
+                </div>
+
+                <!-- Monitor Tab -->
+                <div id="monitor-tab" class="tab-content hidden">
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <!-- System Info -->
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <h3 class="text-lg font-bold text-white mb-4">System Information</h3>
+                            <div id="system-info" class="space-y-3 text-sm text-gray-300">
+                                <!-- System info will be loaded here -->
+                            </div>
+                        </div>
+
+                        <!-- Model Statistics -->
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <h3 class="text-lg font-bold text-white mb-4">Model Statistics</h3>
+                            <div id="model-stats" class="space-y-3 text-sm text-gray-300">
+                                <!-- Model stats will be loaded here -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Settings Tab -->
+                <div id="settings-tab" class="tab-content hidden">
+                    <h2 class="text-xl font-bold text-white mb-6">Settings</h2>
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <h3 class="text-lg font-bold text-white mb-4">Model Management</h3>
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Auto-unload Inactive Models</label>
+                                    <input type="checkbox" id="auto-unload" class="rounded">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Inactivity Timeout (minutes)</label>
+                                    <input type="number" id="timeout-minutes" class="w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="bg-gray-800 rounded-lg p-6">
+                            <h3 class="text-lg font-bold text-white mb-4">System Settings</h3>
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Max Concurrent Models</label>
+                                    <input type="number" id="max-models" class="w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-2">Log Level</label>
+                                    <select id="log-level" class="w-full px-3 py-2 bg-gray-700 text-white rounded border border-gray-600">
+                                        <option value="DEBUG">Debug</option>
+                                        <option value="INFO">Info</option>
+                                        <option value="WARNING">Warning</option>
+                                        <option value="ERROR">Error</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Modal -->
+    <div id="loading-modal" class="fixed inset-0 bg-black bg-opacity-50 hidden flex items-center justify-center z-50">
+        <div class="glass rounded-lg p-8 text-center">
+            <i class="fas fa-spinner fa-spin text-4xl text-blue-400 mb-4"></i>
+            <p class="text-white text-lg" id="loading-text">Loading...</p>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast" class="fixed top-4 right-4 glass rounded-lg p-4 hidden z-50">
+        <div class="flex items-center">
+            <i id="toast-icon" class="fas fa-check-circle text-green-400 mr-3"></i>
+            <span id="toast-message" class="text-white"></span>
+        </div>
+    </div>
+
+    <script>
+        // Global state
+        let currentModels = [];
+        let systemStatus = {};
+
+        // Tab switching
+        document.querySelectorAll('.tab-button').forEach(button => {
+            button.addEventListener('click', () => {
+                const tabName = button.dataset.tab;
+                switchTab(tabName);
+            });
+        });
+
+        function switchTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active', 'border-blue-400', 'text-blue-400');
+                btn.classList.add('border-transparent', 'text-gray-300');
+            });
+            
+            document.querySelector(`[data-tab="${tabName}"]`).classList.add('active', 'border-blue-400', 'text-blue-400');
+            document.querySelector(`[data-tab="${tabName}"]`).classList.remove('border-transparent', 'text-gray-300');
+
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.add('hidden');
+            });
+            document.getElementById(`${tabName}-tab`).classList.remove('hidden');
+
+            // Load tab-specific data
+            if (tabName === 'models') {
+                refreshModels();
+            } else if (tabName === 'monitor') {
+                loadSystemInfo();
+            } else if (tabName === 'settings') {
+                loadSettings();
+            }
+        }
+
+        // Utility functions
+        function showLoading(text = 'Loading...') {
+            document.getElementById('loading-text').textContent = text;
+            document.getElementById('loading-modal').classList.remove('hidden');
+        }
+
+        function hideLoading() {
+            document.getElementById('loading-modal').classList.add('hidden');
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.getElementById('toast');
+            const icon = document.getElementById('toast-icon');
+            const messageEl = document.getElementById('toast-message');
+
+            icon.className = type === 'success' ? 'fas fa-check-circle text-green-400 mr-3' : 'fas fa-exclamation-circle text-red-400 mr-3';
+            messageEl.textContent = message;
+            
+            toast.classList.remove('hidden');
+            setTimeout(() => {
+                toast.classList.add('hidden');
+            }, 3000);
+        }
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 GB';
+            const gb = bytes / (1024 * 1024 * 1024);
+            return gb.toFixed(1) + ' GB';
+        }
+
+        function getStatusClass(status) {
+            switch (status) {
+                case 'loaded': return 'status-loaded';
+                case 'loading': return 'status-loading';
+                case 'failed': return 'status-failed';
+                default: return 'status-unloaded';
+            }
+        }
+
+        // API functions
+        async function apiCall(endpoint, options = {}) {
+            try {
+                const response = await fetch(endpoint, {
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...options.headers
+                    },
+                    ...options
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                return await response.json();
+            } catch (error) {
+                console.error('API call failed:', error);
+                showToast(`API Error: ${error.message}`, 'error');
+                throw error;
+            }
+        }
+
+        // Dashboard functions
+        async function updateDashboard() {
+            try {
+                const status = await apiCall('/v1/system/status');
+                systemStatus = status;
+
+                // Update dashboard cards
+                document.getElementById('system-health').textContent = status.status === 'running' ? 'Healthy' : 'Unhealthy';
+                document.getElementById('loaded-count').textContent = status.model_manager.loaded_models_count;
+                document.getElementById('memory-percent').textContent = status.model_manager.memory_usage_percent.toFixed(1) + '%';
+                document.getElementById('queue-size').textContent = status.model_manager.queue_size;
+                
+                // Update header
+                document.getElementById('memory-usage').textContent = 
+                    `${status.model_manager.total_model_memory_gb.toFixed(1)}GB / ${status.system.memory.total_gb.toFixed(1)}GB`;
+            } catch (error) {
+                console.error('Failed to update dashboard:', error);
+            }
+        }
+
+        // Model management functions
+        async function refreshModels() {
+            try {
+                showLoading('Loading models...');
+                const response = await apiCall('/v1/manager/models');
+                currentModels = response.models || [];
+                renderModels();
+            } catch (error) {
+                showToast('Failed to load models', 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function renderModels() {
+            const container = document.getElementById('models-list');
+            
+            if (currentModels.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-12">
+                        <i class="fas fa-cube text-gray-500 text-4xl mb-4"></i>
+                        <p class="text-gray-400">No models installed</p>
+                        <p class="text-gray-500 text-sm">Use the Discover tab to find and install models</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = currentModels.map(model => `
+                <div class="bg-gray-800 rounded-lg p-4 card-hover">
+                    <div class="flex items-center justify-between">
+                        <div class="flex-1">
+                            <div class="flex items-center mb-2">
+                                <span class="status-indicator ${getStatusClass(model.status)}"></span>
+                                <h3 class="text-lg font-medium text-white">${model.name}</h3>
+                                <span class="ml-2 px-2 py-1 text-xs bg-gray-700 text-gray-300 rounded">${model.type}</span>
+                            </div>
+                            <div class="flex items-center space-x-4 text-sm text-gray-400">
+                                <span><i class="fas fa-memory mr-1"></i>${model.memory_required_gb} GB</span>
+                                <span><i class="fas fa-clock mr-1"></i>Used ${model.use_count} times</span>
+                                ${model.last_used_at ? `<span><i class="fas fa-history mr-1"></i>${new Date(model.last_used_at).toLocaleString()}</span>` : ''}
+                            </div>
+                        </div>
+                        <div class="flex space-x-2">
+                            ${model.status === 'loaded' ? 
+                                `<button onclick="unloadModel('${model.name}')" class="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-1 rounded text-sm">
+                                    <i class="fas fa-stop mr-1"></i>Unload
+                                </button>` :
+                                `<button onclick="loadModel('${model.name}')" class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded text-sm">
+                                    <i class="fas fa-play mr-1"></i>Load
+                                </button>`
+                            }
+                            <button onclick="removeModel('${model.name}')" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm">
+                                <i class="fas fa-trash mr-1"></i>Remove
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function loadModel(modelName) {
+            try {
+                showLoading(`Loading ${modelName}...`);
+                await apiCall(`/v1/models/${modelName}/load`, { method: 'POST' });
+                showToast(`Model ${modelName} loaded successfully`);
+                refreshModels();
+                updateDashboard();
+            } catch (error) {
+                showToast(`Failed to load ${modelName}`, 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function unloadModel(modelName) {
+            try {
+                showLoading(`Unloading ${modelName}...`);
+                await apiCall(`/v1/models/${modelName}/unload`, { method: 'POST' });
+                showToast(`Model ${modelName} unloaded successfully`);
+                refreshModels();
+                updateDashboard();
+            } catch (error) {
+                showToast(`Failed to unload ${modelName}`, 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function removeModel(modelName) {
+            if (!confirm(`Are you sure you want to remove ${modelName}?\n\nThis will:\n• Unload the model from memory\n• Remove it from the database\n• Delete downloaded files (use Shift+Click to keep files)`)) return;
+            
+            try {
+                showLoading(`Removing ${modelName}...`);
+                
+                // Check if Shift key was held to keep files
+                const keepFiles = event.shiftKey;
+                const url = keepFiles ? 
+                    `/v1/models/${modelName}?remove_files=false` : 
+                    `/v1/models/${modelName}`;
+                
+                await apiCall(url, { method: 'DELETE' });
+                
+                const message = keepFiles ? 
+                    `Model ${modelName} removed successfully (files kept)` :
+                    `Model ${modelName} and files removed successfully`;
+                    
+                showToast(message);
+                refreshModels();
+                updateDashboard();
+            } catch (error) {
+                showToast(`Failed to remove ${modelName}`, 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Model discovery functions
+        async function searchModels() {
+            const query = document.getElementById('search-input').value;
+            try {
+                showLoading('Searching models...');
+                const response = await apiCall(`/v1/discover/models?query=${encodeURIComponent(query)}&limit=20`);
+                renderDiscoveryResults(response.models || []);
+            } catch (error) {
+                showToast('Failed to search models', 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function loadPopularModels() {
+            try {
+                showLoading('Loading popular models...');
+                const response = await apiCall('/v1/discover/popular?limit=20');
+                renderDiscoveryResults(response.models || []);
+            } catch (error) {
+                showToast('Failed to load popular models', 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function loadCompatibleModels() {
+            try {
+                showLoading('Loading compatible models...');
+                const response = await apiCall('/v1/discover/compatible?limit=20');
+                renderDiscoveryResults(response.models || []);
+            } catch (error) {
+                showToast('Failed to load compatible models', 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function loadSmallModels() {
+            try {
+                showLoading('Loading small models...');
+                const response = await apiCall('/v1/discover/models?query=4bit&limit=20');
+                const smallModels = (response.models || []).filter(m => m.size_gb && m.size_gb < 10);
+                renderDiscoveryResults(smallModels);
+            } catch (error) {
+                showToast('Failed to load small models', 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function renderDiscoveryResults(models) {
+            const container = document.getElementById('discover-results');
+            
+            if (models.length === 0) {
+                container.innerHTML = `
+                    <div class="text-center py-12">
+                        <i class="fas fa-search text-gray-500 text-4xl mb-4"></i>
+                        <p class="text-gray-400">No models found</p>
+                        <p class="text-gray-500 text-sm">Try a different search term</p>
+                    </div>
+                `;
+                return;
+            }
+
+            container.innerHTML = models.map(model => `
+                <div class="bg-gray-800 rounded-lg p-4 card-hover">
+                    <div class="flex items-center justify-between">
+                        <div class="flex-1">
+                            <div class="flex items-center mb-2">
+                                <h3 class="text-lg font-medium text-white">${model.name}</h3>
+                                <span class="ml-2 px-2 py-1 text-xs bg-blue-700 text-blue-300 rounded">${model.model_type}</span>
+                                ${model.mlx_compatible ? '<span class="ml-2 px-2 py-1 text-xs bg-green-700 text-green-300 rounded">MLX</span>' : ''}
+                            </div>
+                            <p class="text-sm text-gray-400 mb-2">${model.description || 'No description available'}</p>
+                            <div class="flex items-center space-x-4 text-sm text-gray-400">
+                                <span><i class="fas fa-download mr-1"></i>${model.downloads?.toLocaleString() || '0'}</span>
+                                <span><i class="fas fa-heart mr-1"></i>${model.likes || '0'}</span>
+                                ${model.size_gb ? `<span><i class="fas fa-memory mr-1"></i>${model.size_gb.toFixed(1)} GB</span>` : ''}
+                                <span><i class="fas fa-user mr-1"></i>${model.author}</span>
+                            </div>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button onclick="installModel('${model.id}', '${model.name.replace(/'/g, "\\'")}')" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded">
+                                <i class="fas fa-download mr-1"></i>Install
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function installModel(modelId, modelName) {
+            try {
+                showLoading(`Installing ${modelName}...`);
+                const sanitizedName = modelName.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+                await apiCall('/v1/models/install', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        model_id: modelId,
+                        name: sanitizedName
+                    })
+                });
+                showToast(`Model ${modelName} installed successfully`);
+                // Switch to models tab and refresh
+                switchTab('models');
+            } catch (error) {
+                showToast(`Failed to install ${modelName}`, 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // Monitor functions
+        async function loadSystemInfo() {
+            try {
+                const status = await apiCall('/v1/system/status');
+                const systemInfo = document.getElementById('system-info');
+                const modelStats = document.getElementById('model-stats');
+
+                systemInfo.innerHTML = `
+                    <div><strong>Platform:</strong> ${status.system.platform} ${status.system.architecture}</div>
+                    <div><strong>Processor:</strong> ${status.system.processor}</div>
+                    <div><strong>Apple Silicon:</strong> ${status.system.is_apple_silicon ? 'Yes' : 'No'}</div>
+                    <div><strong>MLX Compatible:</strong> ${status.system.mlx_compatible ? 'Yes' : 'No'}</div>
+                    <div><strong>Total Memory:</strong> ${status.system.memory.total_gb.toFixed(1)} GB</div>
+                    <div><strong>Available Memory:</strong> ${status.system.memory.available_gb.toFixed(1)} GB</div>
+                    <div><strong>Memory Usage:</strong> ${status.system.memory.percent_used.toFixed(1)}%</div>
+                `;
+
+                modelStats.innerHTML = `
+                    <div><strong>Loaded Models:</strong> ${status.model_manager.loaded_models_count}</div>
+                    <div><strong>Max Concurrent:</strong> ${status.model_manager.max_concurrent_models}</div>
+                    <div><strong>Queue Size:</strong> ${status.model_manager.queue_size}</div>
+                    <div><strong>Model Memory:</strong> ${status.model_manager.total_model_memory_gb.toFixed(1)} GB</div>
+                    <div><strong>Memory Usage:</strong> ${status.model_manager.memory_usage_percent.toFixed(1)}%</div>
+                    <div><strong>Auto-unload:</strong> ${status.model_manager.auto_unload_enabled ? 'Enabled' : 'Disabled'}</div>
+                    <div><strong>Timeout:</strong> ${status.model_manager.inactivity_timeout_minutes} min</div>
+                `;
+            } catch (error) {
+                showToast('Failed to load system info', 'error');
+            }
+        }
+
+        // Settings functions
+        async function loadSettings() {
+            try {
+                const settings = await apiCall('/v1/settings');
+                document.getElementById('auto-unload').checked = settings.auto_unload_inactive_models;
+                document.getElementById('timeout-minutes').value = settings.model_inactivity_timeout_minutes;
+                document.getElementById('max-models').value = settings.max_concurrent_requests;
+                document.getElementById('log-level').value = settings.log_level;
+            } catch (error) {
+                showToast('Failed to load settings', 'error');
+            }
+        }
+
+        // Search on Enter
+        document.getElementById('search-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                searchModels();
+            }
+        });
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            updateDashboard();
+            refreshModels();
+            
+            // Auto-refresh dashboard every 30 seconds
+            setInterval(updateDashboard, 30000);
+        });
+    </script>
+</body>
+</html>
