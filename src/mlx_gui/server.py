@@ -50,9 +50,17 @@ def validate_api_key(
 
 
 # Pydantic models for OpenAI compatibility
+from typing import Union, Any, Dict
+
+class ChatMessageContent(BaseModel):
+    """Content part for multimodal messages."""
+    type: str  # "text" or "image_url"
+    text: Optional[str] = None
+    image_url: Optional[Dict[str, str]] = None
+
 class ChatMessage(BaseModel):
     role: Optional[str] = None  # "system", "user", "assistant"
-    content: Optional[str] = None
+    content: Optional[Union[str, List[ChatMessageContent]]] = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -115,6 +123,31 @@ def _format_chat_prompt(messages: List[ChatMessage]) -> str:
         role = message.role
         content = message.content
         
+        # Handle multimodal content
+        if isinstance(content, list):
+            # Extract text and image parts
+            text_parts = []
+            images = []
+            
+            for part in content:
+                if part.type == "text" and part.text:
+                    text_parts.append(part.text)
+                elif part.type == "image_url" and part.image_url:
+                    # For now, we'll include a placeholder for the image
+                    # MLX models will need to handle the base64 image data
+                    images.append(part.image_url.get("url", ""))
+            
+            # Combine text parts
+            text_content = " ".join(text_parts)
+            
+            # Add image information if present
+            if images:
+                image_info = f" [Image data: {len(images)} image(s)]"
+                text_content += image_info
+                
+            content = text_content
+        
+        # Handle string content (traditional format)
         if role == "system":
             prompt_parts.append(f"<|im_start|>system\n{content}<|im_end|>")
         elif role == "user":
@@ -512,6 +545,17 @@ def create_app() -> FastAPI:
             "system": system_summary,
             "model_manager": manager_status,
             "mlx_compatible": system_summary["mlx_compatible"]
+        }
+    
+    @app.get("/v1/system/version")
+    async def get_version():
+        """Get application version information."""
+        from mlx_gui import __version__, __author__, __description__
+        return {
+            "version": __version__,
+            "author": __author__,
+            "description": __description__,
+            "name": "MLX-GUI"
         }
     
     @app.get("/v1/settings")
@@ -1130,6 +1174,10 @@ def create_app() -> FastAPI:
         
         with open(template_path, 'r', encoding='utf-8') as f:
             html_content = f.read()
+        
+        # Replace version placeholder with actual version
+        from mlx_gui import __version__
+        html_content = html_content.replace('{{ version }}', __version__)
         
         return HTMLResponse(content=html_content)
     

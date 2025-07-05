@@ -36,6 +36,22 @@ def start(
     database_path: Optional[str] = typer.Option(None, "--database", "-d", help="Custom database path"),
 ):
     """Start the MLX-GUI server."""
+    # Print ASCII art banner
+    console.print("""
+███╗   ███╗██╗     ██╗  ██╗      ██████╗ ██╗   ██╗██╗
+████╗ ████║██║     ╚██╗██╔╝     ██╔════╝ ██║   ██║██║
+██╔████╔██║██║      ╚███╔╝█████╗██║  ███╗██║   ██║██║
+██║╚██╔╝██║██║      ██╔██╗╚════╝██║   ██║██║   ██║██║
+██║ ╚═╝ ██║███████╗██╔╝ ██╗     ╚██████╔╝╚██████╔╝██║
+╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝      ╚═════╝  ╚═════╝ ╚═╝
+""", style="cyan")
+    
+    from mlx_gui import __version__
+    console.print("MLX-GUI - Apple Silicon AI Model Server", style="bold white")
+    console.print(f"Version {__version__}", style="bold green")
+    console.print("By Matthew Rogers (@RamboRogers)", style="dim white")
+    console.print("https://github.com/RamboRogers/mlx-gui", style="blue")
+    console.print()
     console.print(f"🚀 Starting MLX-GUI server on {host}:{port}", style="green")
     
     # Initialize database
@@ -248,6 +264,22 @@ def tray(
     host: str = typer.Option("127.0.0.1", "--host", "-h", help="Host to bind to"),
 ):
     """Launch MLX-GUI with macOS system tray interface."""
+    # Print ASCII art banner
+    console.print("""
+███╗   ███╗██╗     ██╗  ██╗      ██████╗ ██╗   ██╗██╗
+████╗ ████║██║     ╚██╗██╔╝     ██╔════╝ ██║   ██║██║
+██╔████╔██║██║      ╚███╔╝█████╗██║  ███╗██║   ██║██║
+██║╚██╔╝██║██║      ██╔██╗╚════╝██║   ██║██║   ██║██║
+██║ ╚═╝ ██║███████╗██╔╝ ██╗     ╚██████╔╝╚██████╔╝██║
+╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝      ╚═════╝  ╚═════╝ ╚═╝
+""", style="cyan")
+    
+    from mlx_gui import __version__
+    console.print("MLX-GUI - Apple Silicon AI Model Server", style="bold white")
+    console.print(f"Version {__version__}", style="bold green")
+    console.print("By Matthew Rogers (@RamboRogers)", style="dim white") 
+    console.print("https://github.com/RamboRogers/mlx-gui", style="blue")
+    console.print()
     console.print("🍎 Starting MLX-GUI with system tray interface...", style="green")
     
     try:

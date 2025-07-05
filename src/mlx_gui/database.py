@@ -74,7 +74,7 @@ class DatabaseManager:
             ("server_port", 8000, "Default server port"),
             ("max_concurrent_requests", 5, "Maximum concurrent inference requests"),
             ("auto_unload_inactive_models", True, "Automatically unload models after inactivity"),
-            ("model_inactivity_timeout_minutes", 30, "Minutes before unloading inactive models"),
+            ("model_inactivity_timeout_minutes", 5, "Minutes before unloading inactive models"),
             ("enable_system_tray", True, "Enable system tray integration"),
             ("log_level", "INFO", "Application logging level"),
             ("huggingface_cache_dir", "", "HuggingFace cache directory path"),

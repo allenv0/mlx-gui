@@ -58,6 +58,14 @@ class MLXTrayApp(rumps.App):
         self.unload_item = rumps.MenuItem("Unload All Models", callback=self.unload_all_models)
         self.separator2 = rumps.MenuItem("---", callback=None)
         
+        # Version info
+        from mlx_gui import __version__
+        self.version_item = rumps.MenuItem(f"ℹ️ Version {__version__}", callback=None)
+        
+        # GitHub link
+        self.github_item = rumps.MenuItem("📂 View on GitHub", callback=self.open_github)
+        self.separator3 = rumps.MenuItem("---", callback=None)
+        
         # Network settings
         try:
             db_manager = get_database_manager()
@@ -69,7 +77,7 @@ class MLXTrayApp(rumps.App):
             self.bind_checkbox = rumps.MenuItem("Bind to All Interfaces", callback=self.toggle_bind_interfaces)
             self.bind_checkbox.state = False
         
-        self.separator3 = rumps.MenuItem("---", callback=None)
+        self.separator4 = rumps.MenuItem("---", callback=None)
         self.quit_item = rumps.MenuItem("Quit", callback=self.quit_app)
         
         # Add items to menu
@@ -81,8 +89,11 @@ class MLXTrayApp(rumps.App):
             self.admin_item,
             self.unload_item,
             self.separator2,
-            self.bind_checkbox,
+            self.version_item,
+            self.github_item,
             self.separator3,
+            self.bind_checkbox,
+            self.separator4,
             self.quit_item
         ]
         
@@ -275,6 +286,25 @@ class MLXTrayApp(rumps.App):
                 rumps.alert(
                     title="Error",
                     message=f"Failed to unload models: {e}",
+                    ok="OK"
+                )
+    
+    def open_github(self, sender):
+        """Open the MLX-GUI GitHub repository."""
+        github_url = "https://github.com/RamboRogers/mlx-gui"
+        logger.info(f"Opening GitHub repository: {github_url}")
+        
+        try:
+            webbrowser.open(github_url)
+        except Exception as e:
+            logger.error(f"Failed to open browser: {e}")
+            try:
+                subprocess.run(["open", github_url], check=True)
+            except subprocess.CalledProcessError as e2:
+                logger.error(f"Failed to open with system command: {e2}")
+                rumps.alert(
+                    title="Error", 
+                    message=f"Could not open GitHub.\nPlease manually visit: {github_url}",
                     ok="OK"
                 )
     

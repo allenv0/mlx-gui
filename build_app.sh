@@ -89,6 +89,10 @@ else
     echo "📱 Using default icon"
 fi
 
+# Read version from Python module
+VERSION=$(python3 -c "from src.mlx_gui import __version__; print(__version__)")
+echo "📝 Building version: $VERSION"
+
 pyinstaller src/mlx_gui/app_main.py \
     --name="MLX-GUI" \
     --onedir \
@@ -160,9 +164,17 @@ if [ -f "$INFO_PLIST" ]; then
     /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$INFO_PLIST" 2>/dev/null || \
     /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$INFO_PLIST"
     
+    # Add version information to Info.plist
+    /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$INFO_PLIST" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$INFO_PLIST"
+    
+    /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$INFO_PLIST" 2>/dev/null || \
+    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$INFO_PLIST"
+    
     echo "✅ App converted to menu bar app (no dock icon)"
     echo "   - App will only appear in the menu bar"
     echo "   - No dock icon will be shown"
+    echo "   - Version set to: $VERSION"
 else
     echo "⚠️  Warning: Could not find Info.plist at $INFO_PLIST"
 fi
@@ -171,6 +183,44 @@ fi
 if [ -d "dist/MLX-GUI.app" ]; then
     echo "✅ App bundle built successfully!"
     echo "📍 Location: dist/MLX-GUI.app"
+    
+    # Code signing section
+    echo ""
+    echo "🔐 Code Signing..."
+    
+    # Check if we have a Developer ID Application certificate
+    CERT_NAME=$(security find-identity -v -p codesigning | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+    
+    if [ -n "$CERT_NAME" ]; then
+        echo "📝 Found certificate: $CERT_NAME"
+        echo "🔏 Signing app bundle..."
+        
+        # Sign all executables and libraries first (deep signing)
+        codesign --force --deep --sign "$CERT_NAME" --options runtime --entitlements /dev/null "dist/MLX-GUI.app"
+        
+        # Verify the signature
+        if codesign --verify --verbose "dist/MLX-GUI.app" 2>/dev/null; then
+            echo "✅ App successfully signed!"
+            echo "🛡️  This will eliminate macOS security warnings"
+            
+            # Show signature info
+            echo ""
+            echo "📜 Signature Info:"
+            codesign -dv --verbose=4 "dist/MLX-GUI.app" 2>&1 | grep -E "(Identifier|TeamIdentifier|Authority)"
+        else
+            echo "⚠️  Warning: Code signing verification failed"
+            echo "   The app was built but may show security warnings"
+        fi
+    else
+        echo "⚠️  No Developer ID Application certificate found"
+        echo "   App will show security warnings when downloaded"
+        echo "   To fix this:"
+        echo "   1. Get an Apple Developer account ($99/year)"
+        echo "   2. Create a Developer ID Application certificate"
+        echo "   3. Install it in Keychain Access"
+        echo "   4. Re-run this build script"
+    fi
+    
     echo ""
     echo "🎉 You can now:"
     echo "   1. Run: open dist/MLX-GUI.app"
@@ -181,6 +231,11 @@ if [ -d "dist/MLX-GUI.app" ]; then
     echo "   - Size: $(du -sh dist/MLX-GUI.app | cut -f1)"
     echo "   - Type: TRUE STANDALONE (no Python required!)"
     echo "   - Includes: All Python runtime, MLX binaries, and dependencies"
+    if [ -n "$CERT_NAME" ]; then
+        echo "   - Code Signed: ✅ (no security warnings)"
+    else
+        echo "   - Code Signed: ❌ (will show security warnings)"
+    fi
     echo ""
     echo "🎯 This is a REAL standalone app!"
     echo "   - No Python installation required on target system"

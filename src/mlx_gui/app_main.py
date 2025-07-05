@@ -34,12 +34,40 @@ def setup_app_environment():
             ]
         )
         
+        print("""
+███╗   ███╗██╗     ██╗  ██╗      ██████╗ ██╗   ██╗██╗
+████╗ ████║██║     ╚██╗██╔╝     ██╔════╝ ██║   ██║██║
+██╔████╔██║██║      ╚███╔╝█████╗██║  ███╗██║   ██║██║
+██║╚██╔╝██║██║      ██╔██╗╚════╝██║   ██║██║   ██║██║
+██║ ╚═╝ ██║███████╗██╔╝ ██╗     ╚██████╔╝╚██████╔╝██║
+╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝      ╚═════╝  ╚═════╝ ╚═╝
+        """)
+        from mlx_gui import __version__
+        print("MLX-GUI - Apple Silicon AI Model Server")
+        print(f"Version {__version__}")
+        print("By Matthew Rogers (@RamboRogers)")
+        print("https://github.com/RamboRogers/mlx-gui")
+        print()
         print(f"MLX-GUI App Bundle starting...")
         print(f"Logs: {log_file}")
         
     else:
         # Running in development
         logging.basicConfig(level=logging.INFO)
+        print("""
+███╗   ███╗██╗     ██╗  ██╗      ██████╗ ██╗   ██╗██╗
+████╗ ████║██║     ╚██╗██╔╝     ██╔════╝ ██║   ██║██║
+██╔████╔██║██║      ╚███╔╝█████╗██║  ███╗██║   ██║██║
+██║╚██╔╝██║██║      ██╔██╗╚════╝██║   ██║██║   ██║██║
+██║ ╚═╝ ██║███████╗██╔╝ ██╗     ╚██████╔╝╚██████╔╝██║
+╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝      ╚═════╝  ╚═════╝ ╚═╝
+        """)
+        from mlx_gui import __version__
+        print("MLX-GUI - Apple Silicon AI Model Server")
+        print(f"Version {__version__}")
+        print("By Matthew Rogers (@RamboRogers)")
+        print("https://github.com/RamboRogers/mlx-gui")
+        print()
         print("MLX-GUI running in development mode")
 
 def main():

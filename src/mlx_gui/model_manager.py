@@ -159,12 +159,22 @@ class ModelManager:
         import atexit
         atexit.register(self._force_cleanup)
         
-        # Auto-unload settings
+        # Auto-unload settings - read from database with 5 minute default
         self._auto_unload_enabled = True
-        self._inactivity_timeout = timedelta(minutes=30)
+        self._inactivity_timeout = self._get_inactivity_timeout()
         self._cleanup_interval = 60  # seconds
         
         # Don't start background workers immediately - start them lazily
+    
+    def _get_inactivity_timeout(self) -> timedelta:
+        """Get the inactivity timeout from database settings, defaulting to 5 minutes."""
+        try:
+            db_manager = get_database_manager()
+            timeout_minutes = db_manager.get_setting("model_inactivity_timeout_minutes", 5)
+            return timedelta(minutes=timeout_minutes)
+        except Exception as e:
+            logger.warning(f"Failed to read inactivity timeout from database: {e}")
+            return timedelta(minutes=5)  # Default to 5 minutes
     
     def _start_queue_worker(self):
         """Start the queue processing worker."""
@@ -498,6 +508,9 @@ class ModelManager:
         """Get overall system status."""
         system_monitor = get_system_monitor()
         memory_info = system_monitor.get_memory_info()
+        
+        # Refresh timeout setting from database
+        self._inactivity_timeout = self._get_inactivity_timeout()
         
         with self._lock:
             total_model_memory = sum(m.memory_usage_gb for m in self._loaded_models.values())
