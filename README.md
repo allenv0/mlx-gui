@@ -259,9 +259,10 @@ MLX-GUI is licensed under the GNU General Public License v3.0 (GPLv3).<br>
 - [MLX-LM](https://github.com/ml-explore/mlx-examples/tree/main/llms) - MLX language model implementations
 - [HuggingFace](https://huggingface.co) - For the model hub and transformers library
 
+
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=RamboRogers/mlx-gui&type=Timeline)](https://star-history.com/#RamboRogers/mlx-gui&Timeline)
+[![Star History Chart](https://api.star-history.com/svg?repos=RamboRogers/mlx-gui&type=Timeline)](https://www.star-history.com/#RamboRogers/mlx-gui&Timeline)
 
 ---
 
