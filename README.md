@@ -9,9 +9,23 @@
 ╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝      ╚═════╝  ╚═════╝ ╚═╝
 ```
 
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-Required-orange.svg)](https://support.apple.com/en-us/HT211814)
+[![MLX Compatible](https://img.shields.io/badge/MLX-Compatible-green.svg)](https://github.com/ml-explore/mlx)
+
+
 **A lightweight RESTful wrapper around Apple's MLX engine for dynamically loading and serving MLX-compatible models.**
 
 >*TLDR - OpenRouter-style v1 API interface for MLX with Ollama-like model management, featuring auto-queuing, on-demand model loading, and multi-user serving capabilities via single mac app.*
+
+## Why ?
+
+ 1. ✅ Why MLX? Llama.cpp and Ollama are great, but they are slower than MLX. MLX is a native Apple Silicon framework that is optimized for Apple Silicon. Plus, it's free and open source, and this have a nice GUI.
+
+ 2. ⚡️ I wanted to turn my mac Mini and a Studio into more useful multiuser inference servers that I don't want to manage.
+
+ 3. 🏗️ I just want to build AI things and not manage inference servers, or pay for expensive services while maintaining sovereignty of my data.
 
 
 
@@ -27,10 +41,7 @@
 
 
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-Required-orange.svg)](https://support.apple.com/en-us/HT211814)
-[![MLX Compatible](https://img.shields.io/badge/MLX-Compatible-green.svg)](https://github.com/ml-explore/mlx)
+
 
 ## 🚀 Features
 
@@ -55,8 +66,13 @@
 
 ### Option 1: Download Standalone App
 1. Download the latest `.app` from [Releases](https://github.com/RamboRogers/mlx-gui/releases)
-2. Drag to `/Applications` 
+2. Drag to `/Applications`
 3. Launch - no Python installation required!
+4. From the menu bar, click the MLX icon to open the admin interface.
+5. Discover and install models from HuggingFace.
+6. Connect your AI app to the API endpoint.
+
+> *📝 Models may take a few minutes to load. They are gigabytes in size and will download at your internet speed.*
 
 ### Option 2: Install from Source
 ```bash
@@ -76,8 +92,24 @@ mlx-gui start --port 8000
 
 ## 🎮 Usage
 
+### An API Endpoint for [Jan](https://jan.ai) or any other AI app
+
+Simply configure the API endpoint in the app settings to point to your MLX-GUI server. This works with any AI app that supports the OpenAI API. Enter anything for the API key.
+
+<div align="center">
+<table>
+<tr><td><img src="media/setup.png"></td><td><img src="media/usage.png"></td></tr>
+</table>
+</div>
+
 ### System Tray (Recommended)
+
 Launch the app and look for **MLX** in your menu bar:
+
+<div align="center">
+<img src="media/trayicon.png" width="500">
+</div>
+
 - **Open Admin Interface** - Web GUI for model management
 - **System Status** - Real-time monitoring
 - **Unload All Models** - Free up memory
@@ -154,7 +186,7 @@ curl -X POST http://localhost:8000/v1/models/install \
 Full API documentation is available at `/v1/docs` when the server is running, or see [API.md](API.md) for complete endpoint reference.
 
 ### Key Endpoints
-- `GET /v1/models` - List installed models  
+- `GET /v1/models` - List installed models
 - `POST /v1/models/install` - Install from HuggingFace
 - `POST /v1/models/{name}/load` - Load model into memory
 - `POST /v1/chat/completions` - OpenAI-compatible chat
