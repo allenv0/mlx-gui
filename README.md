@@ -1,4 +1,4 @@
-# MLX-GUI
+
 
 ```
 ███╗   ███╗██╗     ██╗  ██╗      ██████╗ ██╗   ██╗██╗
@@ -9,11 +9,15 @@
 ╚═╝     ╚═╝╚══════╝╚═╝  ╚═╝      ╚═════╝  ╚═════╝ ╚═╝
 ```
 
+
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-Required-orange.svg)](https://support.apple.com/en-us/HT211814)
 [![MLX Compatible](https://img.shields.io/badge/MLX-Compatible-green.svg)](https://github.com/ml-explore/mlx)
 
+<div align="center">
+<img src="media/video.gif" >
+</div>
 
 **A lightweight Inference Server for Apple's MLX engine with a GUI.**
 
