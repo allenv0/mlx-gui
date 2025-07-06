@@ -830,7 +830,7 @@
                 const settings = await apiCall('/v1/settings');
                 document.getElementById('auto-unload').checked = settings.auto_unload_inactive_models;
                 document.getElementById('timeout-minutes').value = settings.model_inactivity_timeout_minutes;
-                document.getElementById('max-models').value = settings.max_concurrent_requests;
+                document.getElementById('max-models').value = settings.max_concurrent_models;
                 document.getElementById('log-level').value = settings.log_level;
                 document.getElementById('server-port').value = settings.server_port;
                 document.getElementById('bind-all-interfaces').checked = settings.bind_to_all_interfaces;
@@ -849,7 +849,7 @@
                 const newSettings = {
                     auto_unload_inactive_models: document.getElementById('auto-unload').checked,
                     model_inactivity_timeout_minutes: parseInt(document.getElementById('timeout-minutes').value),
-                    max_concurrent_requests: parseInt(document.getElementById('max-models').value),
+                    max_concurrent_models: parseInt(document.getElementById('max-models').value),
                     log_level: document.getElementById('log-level').value,
                     server_port: parseInt(document.getElementById('server-port').value),
                     bind_to_all_interfaces: document.getElementById('bind-all-interfaces').checked

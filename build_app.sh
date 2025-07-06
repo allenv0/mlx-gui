@@ -55,22 +55,22 @@ sleep 2
 rm -rf build/ dist/ MLX-GUI.spec app_icon.icns 2>/dev/null || true
 
 # Create app icon from PNG
-echo "🎨 Creating app icon from ~/Downloads/icon.png..."
-if [ -f ~/Downloads/icon.png ]; then
+echo "🎨 Creating app icon from ./icon.png..."
+if [ -f "./icon.png" ]; then
     # Create iconset directory
     mkdir -p app_icon.iconset
     
     # Generate different icon sizes using sips (built into macOS)
-    sips -z 16 16 ~/Downloads/icon.png --out app_icon.iconset/icon_16x16.png
-    sips -z 32 32 ~/Downloads/icon.png --out app_icon.iconset/icon_16x16@2x.png
-    sips -z 32 32 ~/Downloads/icon.png --out app_icon.iconset/icon_32x32.png
-    sips -z 64 64 ~/Downloads/icon.png --out app_icon.iconset/icon_32x32@2x.png
-    sips -z 128 128 ~/Downloads/icon.png --out app_icon.iconset/icon_128x128.png
-    sips -z 256 256 ~/Downloads/icon.png --out app_icon.iconset/icon_128x128@2x.png
-    sips -z 256 256 ~/Downloads/icon.png --out app_icon.iconset/icon_256x256.png
-    sips -z 512 512 ~/Downloads/icon.png --out app_icon.iconset/icon_256x256@2x.png
-    sips -z 512 512 ~/Downloads/icon.png --out app_icon.iconset/icon_512x512.png
-    sips -z 1024 1024 ~/Downloads/icon.png --out app_icon.iconset/icon_512x512@2x.png
+    sips -z 16 16 ./icon.png --out app_icon.iconset/icon_16x16.png
+    sips -z 32 32 ./icon.png --out app_icon.iconset/icon_16x16@2x.png
+    sips -z 32 32 ./icon.png --out app_icon.iconset/icon_32x32.png
+    sips -z 64 64 ./icon.png --out app_icon.iconset/icon_32x32@2x.png
+    sips -z 128 128 ./icon.png --out app_icon.iconset/icon_128x128.png
+    sips -z 256 256 ./icon.png --out app_icon.iconset/icon_128x128@2x.png
+    sips -z 256 256 ./icon.png --out app_icon.iconset/icon_256x256.png
+    sips -z 512 512 ./icon.png --out app_icon.iconset/icon_256x256@2x.png
+    sips -z 512 512 ./icon.png --out app_icon.iconset/icon_512x512.png
+    sips -z 1024 1024 ./icon.png --out app_icon.iconset/icon_512x512@2x.png
     
     # Convert to icns format
     iconutil -c icns app_icon.iconset -o app_icon.icns
@@ -80,7 +80,7 @@ if [ -f ~/Downloads/icon.png ]; then
     
     echo "✅ App icon created: app_icon.icns"
 else
-    echo "⚠️  Warning: ~/Downloads/icon.png not found, using default icon"
+    echo "⚠️  Warning: ./icon.png not found, using default icon"
 fi
 
 # Build the app using PyInstaller directly
@@ -418,30 +418,6 @@ pyinstaller src/mlx_gui/app_main.py \
     --osx-bundle-identifier="org.matthewrogers.mlx-gui" \
     --log-level=INFO
 
-# Fix the Info.plist to make it a menu bar app (no dock icon)
-echo "🔧 Converting to menu bar app (removing dock icon)..."
-INFO_PLIST="dist/MLX-GUI.app/Contents/Info.plist"
-
-if [ -f "$INFO_PLIST" ]; then
-    # Add LSUIElement=true to make it a menu bar app
-    /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$INFO_PLIST" 2>/dev/null || \
-    /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$INFO_PLIST"
-    
-    # Add version information to Info.plist
-    /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$INFO_PLIST" 2>/dev/null || \
-    /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$INFO_PLIST"
-    
-    /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$INFO_PLIST" 2>/dev/null || \
-    /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$INFO_PLIST"
-    
-    echo "✅ App converted to menu bar app (no dock icon)"
-    echo "   - App will only appear in the menu bar"
-    echo "   - No dock icon will be shown"
-    echo "   - Version set to: $VERSION"
-else
-    echo "⚠️  Warning: Could not find Info.plist at $INFO_PLIST"
-fi
-
 # Clean up temporary hook files
 echo "🧹 Cleaning up temporary hook files..."
 rm -rf hooks/ rthooks/
@@ -450,6 +426,30 @@ rm -rf hooks/ rthooks/
 if [ -d "dist/MLX-GUI.app" ]; then
     echo "✅ App bundle built successfully!"
     echo "📍 Location: dist/MLX-GUI.app"
+    
+    # Fix the Info.plist to make it a menu bar app (no dock icon) - BEFORE signing
+    echo "🔧 Converting to menu bar app (removing dock icon)..."
+    INFO_PLIST="dist/MLX-GUI.app/Contents/Info.plist"
+
+    if [ -f "$INFO_PLIST" ]; then
+        # Add LSUIElement=true to make it a menu bar app
+        /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$INFO_PLIST" 2>/dev/null || \
+        /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$INFO_PLIST"
+        
+        # Add version information to Info.plist
+        /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $VERSION" "$INFO_PLIST" 2>/dev/null || \
+        /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$INFO_PLIST"
+        
+        /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $VERSION" "$INFO_PLIST" 2>/dev/null || \
+        /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$INFO_PLIST"
+        
+        echo "✅ App converted to menu bar app (no dock icon)"
+        echo "   - App will only appear in the menu bar"
+        echo "   - No dock icon will be shown"
+        echo "   - Version set to: $VERSION"
+    else
+        echo "⚠️  Warning: Could not find Info.plist at $INFO_PLIST"
+    fi
     
     # Code signing section
     echo ""
@@ -463,7 +463,7 @@ if [ -d "dist/MLX-GUI.app" ]; then
         echo "🔏 Signing app bundle..."
         
         # Sign all executables and libraries first (deep signing)
-        codesign --force --deep --sign "$CERT_NAME" --options runtime --entitlements /dev/null "dist/MLX-GUI.app"
+        codesign --force --deep --sign "$CERT_NAME" --options runtime --entitlements entitlements.plist "dist/MLX-GUI.app"
         
         # Verify the signature
         if codesign --verify --verbose "dist/MLX-GUI.app" 2>/dev/null; then

@@ -24,6 +24,8 @@ from mlx_gui.system_monitor import get_system_monitor
 from mlx_gui.huggingface_integration import get_huggingface_client
 from mlx_gui.model_manager import get_model_manager
 from mlx_gui.mlx_integration import GenerationConfig, get_inference_engine
+from mlx_gui.inference_queue_manager import get_inference_manager, QueuedRequest
+from mlx_gui.queued_inference import queued_generate_text, queued_generate_text_stream, queued_transcribe_audio, queued_generate_speech
 from mlx_gui import __version__
 
 logger = logging.getLogger(__name__)
@@ -325,6 +327,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         # Kill everything immediately
         from mlx_gui.model_manager import shutdown_model_manager
+        from mlx_gui.inference_queue_manager import shutdown_inference_manager
+        shutdown_inference_manager()
         shutdown_model_manager()
         db_manager.close()
     except:
@@ -653,8 +657,8 @@ def create_app() -> FastAPI:
                 seed=request_data.get("seed")
             )
             
-            # Generate text
-            result = await model_manager.generate_text(model_name, prompt, config)
+            # Generate text with transparent queuing
+            result = await queued_generate_text(model_name, prompt, config)
             
             return {
                 "model": model_name,
@@ -1061,8 +1065,8 @@ def create_app() -> FastAPI:
                     )
                     yield f"data: {first_chunk.model_dump_json()}\n\n"
                     
-                    # Stream the generation
-                    async for chunk in model_manager.generate_text_stream(request.model, prompt, config):
+                    # Stream the generation with transparent queuing
+                    async for chunk in queued_generate_text_stream(request.model, prompt, config):
                         if chunk:
                             stream_chunk = ChatCompletionStreamResponse(
                                 id=completion_id,
@@ -1100,8 +1104,8 @@ def create_app() -> FastAPI:
                     headers={"Cache-Control": "no-cache", "Connection": "keep-alive"}
                 )
             else:
-                # Non-streaming response
-                result = await model_manager.generate_text(request.model, prompt, config)
+                # Non-streaming response with transparent queuing
+                result = await queued_generate_text(request.model, prompt, config)
                 
                 response = ChatCompletionResponse(
                     id=completion_id,
@@ -1217,30 +1221,18 @@ def create_app() -> FastAPI:
                 temp_file_path = temp_file.name
             
             try:
-                # Transcribe using the loaded audio model
-                result = loaded_model.mlx_wrapper.transcribe_audio(
-                    temp_file_path,
+                # Transcribe using queued audio processing
+                result = await queued_transcribe_audio(
+                    model_name=actual_model_name,
+                    file_path=temp_file_path,
                     language=language,
                     initial_prompt=prompt,
                     temperature=temperature
                 )
                 
-                # Update model usage in database
-                try:
-                    model_record = db.query(Model).filter(Model.name == actual_model_name).first()
-                    if model_record:
-                        model_record.increment_use_count()
-                        db.commit()
-                except Exception as e:
-                    logger.error(f"Error updating audio model usage: {e}")
-                
-                # Ensure result has 'text' field
-                if isinstance(result, dict) and 'text' in result:
-                    text_content = result['text']
-                elif isinstance(result, str):
-                    text_content = result
-                else:
-                    text_content = str(result)
+                # Extract text content from result
+                # Note: Usage counting is now handled in the queue manager
+                text_content = result.get("text", "")
                 
                 # Return response based on format
                 if response_format == "json":
@@ -1298,41 +1290,31 @@ def create_app() -> FastAPI:
             
             model_name = voice_mapping.get(request.voice, "kokoro")
             
-            # Generate audio
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-                # Use MLX Audio TTS
-                mlx_audio.tts.generate(
-                    text=request.input,
-                    model=model_name,
-                    output_file=temp_file.name,
-                    speed=request.speed
-                )
-                
-                # Read generated audio
-                with open(temp_file.name, "rb") as audio_file:
-                    audio_content = audio_file.read()
-                
-                # Clean up
-                os.unlink(temp_file.name)
-                
-                # Return audio response
-                media_type_mapping = {
-                    "mp3": "audio/mpeg",
-                    "opus": "audio/opus", 
-                    "aac": "audio/aac",
-                    "flac": "audio/flac",
-                    "wav": "audio/wav"
+            # Generate audio using queued processing
+            audio_content = await queued_generate_speech(
+                text=request.input,
+                voice=model_name,
+                speed=request.speed
+            )
+            
+            # Return audio response
+            media_type_mapping = {
+                "mp3": "audio/mpeg",
+                "opus": "audio/opus", 
+                "aac": "audio/aac",
+                "flac": "audio/flac",
+                "wav": "audio/wav"
+            }
+            
+            media_type = media_type_mapping.get(request.response_format, "audio/wav")
+            
+            return Response(
+                content=audio_content,
+                media_type=media_type,
+                headers={
+                    "Content-Disposition": f"attachment; filename=speech.{request.response_format}"
                 }
-                
-                media_type = media_type_mapping.get(request.response_format, "audio/wav")
-                
-                return Response(
-                    content=audio_content,
-                    media_type=media_type,
-                    headers={
-                        "Content-Disposition": f"attachment; filename=speech.{request.response_format}"
-                    }
-                )
+            )
                 
         except ImportError as e:
             raise HTTPException(

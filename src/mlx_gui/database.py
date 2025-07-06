@@ -76,6 +76,8 @@ class DatabaseManager:
         default_settings = [
             ("server_port", 8000, "Default server port"),
             ("max_concurrent_requests", 5, "Maximum concurrent inference requests"),
+            ("max_concurrent_requests_per_model", 1, "Maximum concurrent requests per model"),
+            ("max_concurrent_models", 3, "Maximum concurrent loaded models"),
             ("auto_unload_inactive_models", True, "Automatically unload models after inactivity"),
             ("model_inactivity_timeout_minutes", 5, "Minutes before unloading inactive models"),
             ("enable_system_tray", True, "Enable system tray integration"),

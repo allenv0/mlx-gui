@@ -141,8 +141,10 @@ class ModelManager:
     """
     
     def __init__(self, max_concurrent_models: int = 3, max_memory_usage: float = 0.8):
-        self.max_concurrent_models = max_concurrent_models
         self.max_memory_usage = max_memory_usage  # Max % of system memory to use
+        
+        # Read max_concurrent_models from database settings
+        self.max_concurrent_models = self._get_max_concurrent_models(max_concurrent_models)
         
         # Model storage
         self._loaded_models: Dict[str, LoadedModel] = {}
@@ -167,6 +169,15 @@ class ModelManager:
         
         # Don't start background workers immediately - start them lazily
     
+    def _get_max_concurrent_models(self, default_value: int) -> int:
+        """Get the max concurrent models from database settings."""
+        try:
+            db_manager = get_database_manager()
+            return db_manager.get_setting("max_concurrent_models", default_value)
+        except Exception as e:
+            logger.warning(f"Failed to read max concurrent models from database: {e}")
+            return default_value
+
     def _get_inactivity_timeout(self) -> timedelta:
         """Get the inactivity timeout from database settings, defaulting to 5 minutes."""
         try:
@@ -364,6 +375,10 @@ class ModelManager:
     
     def _check_memory_constraints(self, required_memory_gb: float) -> bool:
         """Check if we can load a model with the required memory."""
+        # First check concurrent model count limit
+        if len(self._loaded_models) >= self.max_concurrent_models:
+            return False
+        
         system_monitor = get_system_monitor()
         memory_info = system_monitor.get_memory_info()
         
@@ -476,7 +491,7 @@ class ModelManager:
                 key=lambda x: self._loaded_models[x].last_used_at
             )
             
-            logger.info(f"Unloading LRU model {lru_model_name} to make space")
+            logger.info(f"Unloading LRU model {lru_model_name} to make space for new model")
             self.unload_model(lru_model_name)
             
             if len(self._loaded_models) == 0:
@@ -587,13 +602,18 @@ class ModelManager:
                 )
             }
     
+    def refresh_settings(self):
+        """Refresh settings from database (called when settings change)."""
+        self.max_concurrent_models = self._get_max_concurrent_models(3)
+        self._inactivity_timeout = self._get_inactivity_timeout()
+        
     def get_system_status(self) -> Dict[str, Any]:
         """Get overall system status."""
         system_monitor = get_system_monitor()
         memory_info = system_monitor.get_memory_info()
         
-        # Refresh timeout setting from database
-        self._inactivity_timeout = self._get_inactivity_timeout()
+        # Refresh settings from database
+        self.refresh_settings()
         
         with self._lock:
             total_model_memory = sum(m.memory_usage_gb for m in self._loaded_models.values())
