@@ -15,7 +15,7 @@
 [![MLX Compatible](https://img.shields.io/badge/MLX-Compatible-green.svg)](https://github.com/ml-explore/mlx)
 
 
-**A lightweight RESTful wrapper around Apple's MLX engine for dynamically loading and serving MLX-compatible models.**
+**A lightweight Inference Server for Apple's MLX engine with a GUI.**
 
 >*TLDR - OpenRouter-style v1 API interface for MLX with Ollama-like model management, featuring auto-queuing, on-demand model loading, and multi-user serving capabilities via single mac app.*
 
