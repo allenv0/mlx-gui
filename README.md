@@ -25,7 +25,7 @@
 
 ## 📦 Latest Release
 
-### v1.1.0 - Vision Models & Enhanced Compatibility (January 2025)
+### v1.1.0 - Vision Models & Enhanced Compatibility (July 10, 2025)
 
 🎯 **Major Vision Model Support Added**
 - ✅ **MLX-VLM Integration** - Full support for vision/multimodal models
