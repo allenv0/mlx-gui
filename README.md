@@ -23,6 +23,29 @@
 
 >*TLDR - OpenRouter-style v1 API interface for MLX with Ollama-like model management, featuring auto-queuing, on-demand model loading, and multi-user serving capabilities via single mac app.*
 
+## 📦 Latest Release
+
+### v1.1.0 - Vision Models & Enhanced Compatibility (January 2025)
+
+🎯 **Major Vision Model Support Added**
+- ✅ **MLX-VLM Integration** - Full support for vision/multimodal models
+- 🖼️ **Image Understanding** - Gemma-3n, Qwen2-VL, LLaVA models now working perfectly
+- 🔧 **Fixed MLX-VLM Queue Issues** - Resolved image token handling for all vision models
+- 📸 **OpenAI-Compatible Images** - Send images via base64 or URLs in chat completions
+
+🚀 **Enhanced Features**
+- 📊 **Text Embeddings** - Full OpenAI-compatible embeddings API with queuing support
+- ⚡ **Improved Queue System** - Robust handling of text, audio, vision, and embedding requests
+- 🔄 **Auto-Model Detection** - Automatically detects and handles different model types
+- 🎨 **Better Error Handling** - Clear memory requirement warnings and compatibility checks
+
+🛠️ **Technical Improvements**
+- 🏗️ **Unified MLX Integration** - Consistent handling across MLX-LM, MLX-Whisper, and MLX-VLM
+- 📱 **Updated Build System** - Standalone app now includes full vision model support
+- 🔍 **Enhanced Discovery** - Better model categorization and compatibility detection
+
+**Download:** [Latest Release](https://github.com/RamboRogers/mlx-gui/releases/latest)
+
 ## Why ?
 
  1. ✅ Why MLX? Llama.cpp and Ollama are great, but they are slower than MLX. MLX is a native Apple Silicon framework that is optimized for Apple Silicon. Plus, it's free and open source, and this have a nice GUI.
@@ -56,6 +79,8 @@
 - **📊 System Monitoring** - Real-time memory usage and system status
 - **🔍 HuggingFace Integration** - Discover and install MLX-compatible models
 - **🎙️ Audio Support** - Speech-to-text with Whisper and Parakeet models
+- **🖼️ Vision Models** - Image understanding with Gemma-3n, Qwen2-VL, LLaVA models
+- **🔢 Embeddings Support** - Text embeddings with OpenAI-compatible API
 - **🍎 macOS System Tray** - Native menu bar integration
 - **⚡ OpenAI Compatibility** - Drop-in replacement for OpenAI API
 - **📱 Standalone App** - Packaged macOS app bundle (no Python required)
@@ -139,12 +164,39 @@ curl -X POST http://localhost:8000/v1/chat/completions \
   }'
 ```
 
+#### Vision Models with Images
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2-vl-2b-instruct",
+    "messages": [{
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What do you see in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQ..."}}
+      ]
+    }],
+    "max_tokens": 200
+  }'
+```
+
 #### Audio Transcription
 ```bash
 curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -H "Content-Type: multipart/form-data" \
   -F "file=@audio.wav" \
   -F "model=parakeet-tdt-0-6b-v2"
+```
+
+#### Text Embeddings
+```bash
+curl -X POST http://localhost:8000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": ["Hello world", "How are you?"],
+    "model": "qwen3-embedding-0-6b-4bit"
+  }'
 ```
 
 #### Install Models
@@ -163,6 +215,22 @@ curl -X POST http://localhost:8000/v1/models/install \
   -d '{
     "model_id": "mlx-community/parakeet-tdt-0.6b-v2",
     "name": "parakeet-tdt-0-6b-v2"
+  }'
+
+# Install vision model
+curl -X POST http://localhost:8000/v1/models/install \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_id": "mlx-community/Qwen2-VL-2B-Instruct-4bit",
+    "name": "qwen2-vl-2b-instruct"
+  }'
+
+# Install embedding model
+curl -X POST http://localhost:8000/v1/models/install \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_id": "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ",
+    "name": "qwen3-embedding-0-6b-4bit"
   }'
 ```
 
@@ -193,9 +261,11 @@ Full API documentation is available at `/v1/docs` when the server is running, or
 - `GET /v1/models` - List installed models
 - `POST /v1/models/install` - Install from HuggingFace
 - `POST /v1/models/{name}/load` - Load model into memory
-- `POST /v1/chat/completions` - OpenAI-compatible chat
+- `POST /v1/chat/completions` - OpenAI-compatible chat (text + images)
+- `POST /v1/embeddings` - Generate text embeddings
 - `POST /v1/audio/transcriptions` - Audio transcription (Whisper/Parakeet)
 - `GET /v1/discover/models` - Search HuggingFace for MLX models
+- `GET /v1/discover/embeddings` - Search for embedding models
 - `GET /v1/system/status` - System and memory status
 
 ## 🛠️ Development
@@ -209,8 +279,8 @@ cd mlx-gui
 python -m venv .venv
 source .venv/bin/activate
 
-# Install in development mode with audio support
-pip install -e ".[dev,audio]"
+# Install in development mode with audio and vision support
+pip install -e ".[dev,audio,vision]"
 
 # Run tests
 pytest
@@ -221,8 +291,8 @@ mlx-gui start --reload
 
 ### Build Standalone App
 ```bash
-# Install build dependencies with audio support
-pip install rumps pyinstaller mlx-whisper parakeet-mlx
+# Install build dependencies with audio and vision support
+pip install rumps pyinstaller mlx-whisper parakeet-mlx mlx-vlm
 
 # Build macOS app bundle
 ./build_app.sh

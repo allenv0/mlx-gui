@@ -36,17 +36,26 @@ try:
 except ImportError:
     HAS_PARAKEET_MLX = False
 
+# Vision/multimodal model imports (optional)
+try:
+    import mlx_vlm
+    HAS_MLX_VLM = True
+except ImportError:
+    HAS_MLX_VLM = False
+
 from mlx_gui.huggingface_integration import get_huggingface_client
 
 logger = logging.getLogger(__name__)
 
-# Log audio library status after logger is defined
+# Log library status after logger is defined
 if not HAS_MLX_WHISPER:
     logger.warning("mlx-whisper not installed - Whisper models not supported")
 if not HAS_MLX_AUDIO:
     logger.warning("mlx-audio not installed - Audio models not supported")
 if not HAS_PARAKEET_MLX:
     logger.warning("parakeet-mlx not installed - Parakeet models not supported")
+if not HAS_MLX_VLM:
+    logger.warning("mlx-vlm not installed - Vision/multimodal models not supported")
 
 
 @dataclass
@@ -352,6 +361,90 @@ class MLXAudioWrapper(MLXModelWrapper):
             raise
 
 
+class MLXVisionWrapper(MLXModelWrapper):
+    """Specialized wrapper for MLX-VLM vision/multimodal models."""
+    
+    def __init__(self, model, processor, model_path: str, config: Dict[str, Any]):
+        super().__init__(model, processor, model_path, config)
+        self.model_type = "vision"
+        self.processor = processor
+        self.model_config = model.config  # Use model.config for MLX-VLM operations
+        
+    def generate_with_images(self, prompt: str, images: List[str], config: GenerationConfig) -> GenerationResult:
+        """Generate text with image inputs using MLX-VLM."""
+        if not HAS_MLX_VLM:
+            raise ImportError("mlx-vlm is required for vision models. Install with: pip install mlx-vlm")
+        
+        import time
+        from mlx_vlm.prompt_utils import apply_chat_template
+
+        start_time = time.time()
+        
+        try:
+            logger.info(f"Generating with {len(images)} images.")
+            
+            if not images:
+                raise ValueError("At least one image must be provided for vision model generation")
+
+            # The user's prompt, without any special tokens.
+            user_message = prompt
+
+            # Format the prompt using the official utility
+            formatted_prompt = apply_chat_template(
+                processor=self.processor,
+                config=self.model_config,
+                prompt=user_message,
+                num_images=len(images)
+            )
+            
+            # MLX-VLM expects list of image paths, not single string
+            image_list = images  # images is already a list of paths
+            
+            logger.info(f"Using images: {image_list}")
+            logger.debug(f"Formatted prompt: {repr(formatted_prompt)}")
+
+            # Call MLX-VLM with correct API signature
+            from mlx_vlm import generate as vlm_generate
+            result = vlm_generate(
+                model=self.model,
+                processor=self.processor,
+                prompt=formatted_prompt,
+                image=image_list,
+                max_tokens=config.max_tokens,
+                temperature=config.temperature,
+                verbose=True
+            )
+            
+            logger.debug(f"MLX-VLM raw result: {repr(result)}")
+            
+            end_time = time.time()
+            generation_time = end_time - start_time
+            
+            generated_text = str(result).strip()
+            
+            # Estimate token counts (vision models don't have direct tokenizer access)
+            prompt_tokens = len(user_message.split())
+            completion_tokens = len(generated_text.split())
+            total_tokens = prompt_tokens + completion_tokens
+            tokens_per_second = completion_tokens / generation_time if generation_time > 0 else 0
+            
+            return GenerationResult(
+                text=generated_text,
+                prompt=user_message,
+                total_tokens=total_tokens,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                generation_time_seconds=generation_time,
+                tokens_per_second=tokens_per_second
+            )
+            
+        except Exception as e:
+            logger.error(f"MLX-VLM generation failed: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            raise
+
+
 class MLXLoader:
     """Handles loading models with MLX-LM."""
     
@@ -436,6 +529,33 @@ class MLXLoader:
                     wrapper = MLXAudioWrapper(model_path=model_path, config=config)
                     if not wrapper.load_audio_model():
                         raise RuntimeError("Failed to load audio model")
+            
+            elif model_type == "vision":
+                # Vision/multimodal model using MLX-VLM
+                logger.info("Loading as Vision/VLM model")
+                try:
+                    # MLX-VLM needs both model and processor
+                    from mlx_vlm import load as vlm_load
+                    model, processor = vlm_load(model_path)
+                    wrapper = MLXVisionWrapper(
+                        model=model,
+                        processor=processor,
+                        model_path=model_path,
+                        config=config
+                    )
+                except Exception as e:
+                    # Fallback to regular text model if VLM loading fails
+                    logger.warning(f"Failed to load as VLM model, trying as text model: {e}")
+                    try:
+                        model, tokenizer = load(model_path)
+                        wrapper = MLXModelWrapper(
+                            model=model,
+                            tokenizer=tokenizer,
+                            model_path=model_path,
+                            config=config
+                        )
+                    except Exception as fallback_e:
+                        raise RuntimeError(f"Failed to load as both VLM and text model. VLM error: {e}, Text error: {fallback_e}")
                 
             else:
                 # Standard text generation model
@@ -478,6 +598,10 @@ class MLXLoader:
         if any(keyword in path_lower for keyword in ["parakeet", "speech", "stt", "asr"]):
             return "audio"
         
+        # Vision/multimodal models
+        if any(keyword in path_lower for keyword in ["vision", "vlm", "multimodal", "llava", "qwen2-vl", "idefics", "gemma-3"]):
+            return "vision"
+        
         # Check config.json for additional hints
         try:
             config_path = os.path.join(model_path, "config.json")
@@ -494,6 +618,8 @@ class MLXLoader:
                         return "whisper"
                     if any(keyword in arch_str for keyword in ["speech", "audio", "parakeet"]):
                         return "audio"
+                    if any(keyword in arch_str for keyword in ["vision", "vlm", "multimodal", "llava", "qwen2vl", "idefics"]):
+                        return "vision"
                 
                 # Check model type field
                 model_type = config.get("model_type", "").lower()
@@ -501,6 +627,8 @@ class MLXLoader:
                     return "whisper"
                 if any(keyword in model_type for keyword in ["speech", "audio"]):
                     return "audio"
+                if any(keyword in model_type for keyword in ["vision", "multimodal"]):
+                    return "vision"
         
         except Exception as e:
             logger.debug(f"Could not read config for model type detection: {e}")

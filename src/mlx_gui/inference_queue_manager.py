@@ -36,7 +36,7 @@ class QueuedRequest:
     callback: Optional[Callable] = None
     streaming: bool = False
     stream_callback: Optional[Callable] = None  # For streaming responses
-    request_type: str = "text"  # "text", "transcription", "tts"
+    request_type: str = "text"  # "text", "transcription", "tts", "embeddings", "vision_generation"
     audio_data: Optional[Dict] = None  # For audio requests
     
     def __post_init__(self):
@@ -451,6 +451,117 @@ class InferenceRequestManager:
                             callback(request_id, True, audio_content)
                         
                         logger.info(f"Completed TTS request {request_id} for model {model_name}")
+                    
+                    elif request_type == "embeddings":
+                        # Handle embeddings generation
+                        audio_data = request_data.get("audio_data", {})  # Reused for embedding data
+                        texts = audio_data.get("texts", [])
+                        
+                        if not texts:
+                            raise ValueError("No texts provided for embeddings")
+                        
+                        # Check if this is an embedding model
+                        if not hasattr(loaded_model.mlx_wrapper, 'generate_embeddings'):
+                            raise ValueError(f"Model {model_name} is not an embedding model")
+                        
+                        # Generate embeddings
+                        result = loaded_model.mlx_wrapper.generate_embeddings(texts)
+                        
+                        # Format result
+                        if isinstance(result, list):
+                            embeddings = result
+                            prompt_tokens = sum(len(text.split()) for text in texts)
+                            total_tokens = prompt_tokens
+                        else:
+                            # Assume result is a dict with embeddings and token counts
+                            embeddings = result.get("embeddings", [])
+                            prompt_tokens = result.get("prompt_tokens", sum(len(text.split()) for text in texts))
+                            total_tokens = result.get("total_tokens", prompt_tokens)
+                        
+                        output_data = {
+                            "embeddings": embeddings,
+                            "prompt_tokens": prompt_tokens,
+                            "total_tokens": total_tokens,
+                            "type": "embeddings"
+                        }
+                        inference_request.mark_completed(output_data)
+                        
+                        # Update model usage count for embeddings
+                        try:
+                            model_record = session.query(Model).filter(Model.name == model_name).first()
+                            if model_record:
+                                model_record.increment_use_count()
+                        except Exception as e:
+                            logger.error(f"Error updating embeddings model usage: {e}")
+                        
+                        session.commit()
+                        
+                        # Call callback
+                        callback = self._pending_callbacks.pop(request_id, None)
+                        if callback:
+                            callback(request_id, True, output_data)
+                        
+                        logger.info(f"Completed embeddings request {request_id} for model {model_name}")
+                    
+                    elif request_type == "vision_generation":
+                        # Handle vision generation with images
+                        # Get data from standard request fields
+                        prompt = request_data.get("prompt", "")
+                        
+                        # Get vision-specific data from audio_data field
+                        vision_data = request_data.get("audio_data", {})
+                        images = vision_data.get("image_file_paths", [])  # Get file paths, not URLs
+                        
+                        logger.debug(f"Queue processing: Found {len(images)} image file paths")
+                        for i, img_path in enumerate(images):
+                            logger.debug(f"Image file {i+1}: {img_path}")
+                        
+                        if not prompt:
+                            raise ValueError("No prompt provided for vision generation")
+                        
+                        if not images:
+                            raise ValueError("No images provided for vision generation")
+                        
+                        # Use the same config that was created above for all requests
+                        # The config is already constructed from request_data["config"] at line 352-360
+                        
+                        # Check if this is a vision model
+                        if not hasattr(loaded_model.mlx_wrapper, 'generate_with_images'):
+                            logger.warning(f"Model {model_name} is not a vision model, falling back to text generation")
+                            # Fallback to regular text generation
+                            result = loaded_model.mlx_wrapper.generate(prompt, config)
+                        else:
+                            # Generate with vision model
+                            result = loaded_model.mlx_wrapper.generate_with_images(prompt, images, config)
+                        
+                        output_data = {
+                            "text": result.text,
+                            "prompt": result.prompt,
+                            "total_tokens": result.total_tokens,
+                            "prompt_tokens": result.prompt_tokens,
+                            "completion_tokens": result.completion_tokens,
+                            "generation_time_seconds": result.generation_time_seconds,
+                            "tokens_per_second": result.tokens_per_second,
+                            "type": "vision_generation"
+                        }
+                        inference_request.mark_completed(output_data)
+                        
+                        # Update model usage count
+                        try:
+                            model_record = session.query(Model).filter(Model.name == model_name).first()
+                            if model_record:
+                                model_record.increment_use_count()
+                        except Exception as e:
+                            logger.error(f"Error updating vision model usage: {e}")
+                        
+                        session.commit()
+                        
+                        # Call callback
+                        callback = self._pending_callbacks.pop(request_id, None)
+                        if callback:
+                            callback(request_id, True, output_data)
+                        
+                        logger.info(f"Completed vision generation request {request_id} for model {model_name}")
                     
                     elif is_streaming:
                         # For streaming, just notify that streaming can start

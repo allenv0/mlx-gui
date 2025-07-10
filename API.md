@@ -47,7 +47,7 @@ Root endpoint with basic server information.
 ```json
 {
   "name": "MLX-GUI API",
-  "version": "0.1.0",
+  "version": "1.1.0",
   "status": "running"
 }
 ```
@@ -691,6 +691,193 @@ pip install mlx-gui[audio]
 
 ---
 
+## Multimodal Support
+
+### Vision/Image Models
+
+MLX-GUI now supports vision and multimodal models using MLX-VLM for image understanding. These models can process both text and images in chat conversations.
+
+#### Supported Vision Models
+
+- **Qwen2-VL series**: `mlx-community/Qwen2-VL-2B-Instruct-4bit`, `mlx-community/Qwen2-VL-7B-Instruct-4bit`
+- **LLaVA models**: Various LLaVA variants optimized for MLX
+- **Idefics3**: Multi-modal conversation models
+- **Gemma-3 Vision**: `mlx-community/gemma-3n-E4B-it-bf16` and related models
+
+#### Installation
+
+Vision model support requires MLX-VLM:
+
+```bash
+# Install with vision support
+pip install mlx-gui[vision]
+
+# Or install MLX-VLM separately
+pip install mlx-vlm>=0.1.0
+```
+
+#### Chat Completions with Images
+
+Send images via the OpenAI-compatible chat completions endpoint using base64 data URLs or image URLs:
+
+**Example with Base64 Image:**
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer sk-any-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2-vl-2b-instruct",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text",
+            "text": "What do you see in this image?"
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ..."
+            }
+          }
+        ]
+      }
+    ],
+    "max_tokens": 500
+  }'
+```
+
+**Example with Image URL:**
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Authorization: Bearer sk-any-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gemma-3n-e4b-it",
+    "messages": [
+      {
+        "role": "user", 
+        "content": [
+          {
+            "type": "text",
+            "text": "Describe this image in detail."
+          },
+          {
+            "type": "image_url",
+            "image_url": {
+              "url": "https://example.com/image.jpg"
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+**Multiple Images:**
+```bash
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "qwen2-vl-7b-instruct",
+    "messages": [
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "text", 
+            "text": "Compare these two images and tell me the differences."
+          },
+          {
+            "type": "image_url",
+            "image_url": {"url": "data:image/jpeg;base64,/9j/4AAQ..."}
+          },
+          {
+            "type": "image_url", 
+            "image_url": {"url": "data:image/png;base64,iVBORw0KGgo..."}
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+#### Response Format
+
+Vision models return the same OpenAI-compatible response format as text models:
+
+```json
+{
+  "id": "chatcmpl-abc123",
+  "object": "chat.completion",
+  "created": 1751234567,
+  "model": "qwen2-vl-2b-instruct",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "I can see a beautiful landscape with mountains in the background and a lake in the foreground. The sky appears to be partly cloudy with warm lighting suggesting either sunrise or sunset..."
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 89,
+    "completion_tokens": 156,
+    "total_tokens": 245
+  }
+}
+```
+
+#### Supported Image Formats
+
+- **JPEG/JPG** (recommended)
+- **PNG**
+- **GIF** (static)
+- **WebP**
+- **Base64 encoded images** (data URLs)
+- **HTTP/HTTPS image URLs**
+
+#### Model Auto-Detection
+
+MLX-GUI automatically detects vision models based on:
+
+- Model path containing keywords: `vision`, `vlm`, `multimodal`, `llava`, `qwen2-vl`, `idefics`, `gemma-3`
+- Model architecture in `config.json`
+- Model type metadata
+
+When images are provided to a non-vision model, they are ignored with a warning.
+
+#### Installation Example
+
+**Install a vision model:**
+```bash
+curl -X POST http://localhost:8000/v1/models/install \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model_id": "mlx-community/Qwen2-VL-2B-Instruct-4bit",
+    "name": "qwen2-vl-2b-instruct"
+  }'
+```
+
+#### Limitations
+
+- **Streaming**: Vision models don't support streaming responses yet
+- **File uploads**: Only base64 data URLs and HTTP image URLs are supported
+- **Video**: Currently only static images are supported, not video files
+- **Large images**: Very large images may be automatically resized by MLX-VLM
+
+#### Architecture
+
+MLX-GUI uses MLX-VLM for vision model support:
+- **MLX-LM**: For text-only models
+- **MLX-VLM**: For vision/multimodal models with image processing
+- **Automatic fallback**: If MLX-VLM fails, falls back to MLX-LM text generation
+
+---
+
 ## OpenAI Compatibility
 
 ### Current Support
@@ -837,6 +1024,78 @@ curl -X GET http://localhost:8000/v1/models \
   ]
 }
 ```
+
+### OpenAI Embeddings
+
+**Generate text embeddings:**
+```bash
+curl -X POST http://localhost:8000/v1/embeddings \
+  -H "Authorization: Bearer sk-any-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": ["Hello world", "How are you today?"],
+    "model": "qwen3-embedding-0-6b-4bit",
+    "encoding_format": "float"
+  }'
+```
+
+**Request Parameters:**
+- `input` (required): String or array of strings to embed
+- `model` (required): Name of the embedding model to use
+- `encoding_format` (optional): Format for embeddings (`float` or `base64`, default: `float`)
+- `dimensions` (optional): Number of dimensions to truncate embeddings to
+- `user` (optional): User identifier for tracking
+
+**Response:**
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "object": "embedding",
+      "embedding": [0.1234, -0.5678, 0.9012, ...],
+      "index": 0
+    },
+    {
+      "object": "embedding", 
+      "embedding": [0.2345, -0.6789, 0.8901, ...],
+      "index": 1
+    }
+  ],
+  "model": "qwen3-embedding-0-6b-4bit",
+  "usage": {
+    "prompt_tokens": 8,
+    "total_tokens": 8
+  }
+}
+```
+
+**Base64 Encoding:**
+```bash
+curl -X POST http://localhost:8000/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "input": "Text to embed",
+    "model": "qwen3-embedding-0-6b-4bit",
+    "encoding_format": "base64"
+  }'
+```
+
+**Supported Embedding Models:**
+- Install with: `POST /v1/models/install`
+  ```json
+  {
+    "model_id": "mlx-community/Qwen3-Embedding-0.6B-4bit-DWQ",
+    "name": "qwen3-embedding-0-6b-4bit"
+  }
+  ```
+
+**Features:**
+- **Queuing**: Automatic queuing when models are busy
+- **Auto-loading**: Models load automatically when needed
+- **Batch processing**: Handle multiple texts in one request
+- **Usage tracking**: Token counting and metrics
+- **Memory management**: Efficient model loading/unloading
 
 ---
 

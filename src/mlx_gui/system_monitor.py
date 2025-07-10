@@ -33,7 +33,7 @@ class SystemMemory:
         if self.can_load_model(required_gb):
             return f"✅ Safe to load - {self.available_gb:.1f}GB available, {required_gb:.1f}GB required"
         else:
-            return f"❌ Insufficient memory - {self.available_gb:.1f}GB available, {required_gb:.1f}GB required"
+            return f"⚠️ Memory warning - {self.available_gb:.1f}GB available, {required_gb:.1f}GB required (may cause system slowdown)"
 
 
 @dataclass
@@ -183,11 +183,11 @@ class SystemMonitor:
             required_memory_gb: Memory required by the model in GB
             
         Returns:
-            Tuple of (can_load, message)
+            Tuple of (can_load, message) - now always returns True for memory but with warnings
         """
         system_info = self.get_system_info()
         
-        # Check MLX compatibility first
+        # Check MLX compatibility first - this is still a hard requirement
         if not system_info.mlx_compatible:
             return False, "❌ MLX requires Apple Silicon (M1/M2/M3) hardware"
         
@@ -196,7 +196,7 @@ class SystemMonitor:
         max_model_memory = memory_info.total_gb * 0.8  # 80% of total RAM available for models
         
         if required_memory_gb > max_model_memory:
-            return False, f"❌ Model too large - This model requires {required_memory_gb:.1f}GB but only {max_model_memory:.1f}GB ({memory_info.total_gb:.1f}GB total * 80%) is available for models"
+            return True, f"⚠️ Memory warning - This model requires {required_memory_gb:.1f}GB but only {max_model_memory:.1f}GB ({memory_info.total_gb:.1f}GB total * 80%) is typically available for models. Loading may cause system slowdown or instability."
         
         return True, f"✅ Compatible - {required_memory_gb:.1f}GB required, {max_model_memory:.1f}GB available ({memory_info.total_gb:.1f}GB total * 80%)"
     

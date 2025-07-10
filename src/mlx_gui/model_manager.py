@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional, Any, List, Callable, AsyncGenerator
+from typing import Dict, Optional, Any, List, Callable, AsyncGenerator, Tuple
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
@@ -373,11 +373,11 @@ class ModelManager:
         # Fallback: return original path
         return model_path
     
-    def _check_memory_constraints(self, required_memory_gb: float) -> bool:
-        """Check if we can load a model with the required memory."""
-        # First check concurrent model count limit
+    def _check_memory_constraints(self, required_memory_gb: float) -> Tuple[bool, str]:
+        """Check if we can load a model with the required memory. Returns (can_load, warning_message)."""
+        # First check concurrent model count limit - this is still a hard limit
         if len(self._loaded_models) >= self.max_concurrent_models:
-            return False
+            return False, f"Maximum concurrent models ({self.max_concurrent_models}) already loaded"
         
         system_monitor = get_system_monitor()
         memory_info = system_monitor.get_memory_info()
@@ -388,9 +388,10 @@ class ModelManager:
         # Check if we have enough total memory (80% of system RAM)
         max_allowed_memory = memory_info.total_gb * 0.8
         if current_model_memory + required_memory_gb > max_allowed_memory:
-            return False
+            warning_msg = f"⚠️ Memory warning: Loading this model ({required_memory_gb:.1f}GB) with current models ({current_model_memory:.1f}GB) may exceed recommended memory ({max_allowed_memory:.1f}GB of {memory_info.total_gb:.1f}GB total)"
+            return True, warning_msg  # Allow but warn
             
-        return True
+        return True, ""
     
     def _load_model_sync(self, request: LoadRequest):
         """Synchronously load a model (runs in background thread)."""
@@ -415,10 +416,23 @@ class ModelManager:
                     raise ValueError(f"Model {model_name} not found in database")
                 
                 # Check memory constraints
-                if not self._check_memory_constraints(model_record.memory_required_gb):
-                    system_monitor = get_system_monitor()
-                    can_load, message = system_monitor.check_model_compatibility(model_record.memory_required_gb)
-                    raise RuntimeError(message)
+                can_load, memory_warning = self._check_memory_constraints(model_record.memory_required_gb)
+                if not can_load:
+                    # Hard limits still apply (e.g., max concurrent models)
+                    raise RuntimeError(memory_warning)
+                elif memory_warning:
+                    # Log warning but proceed
+                    logger.warning(f"Loading model {model_name} with memory warning: {memory_warning}")
+                
+                # Also check system compatibility for hardware requirements
+                system_monitor = get_system_monitor()
+                hardware_compatible, hardware_message = system_monitor.check_model_compatibility(model_record.memory_required_gb)
+                if not hardware_compatible:
+                    # Hardware compatibility is still a hard requirement
+                    raise RuntimeError(hardware_message)
+                elif "warning" in hardware_message.lower():
+                    # Log system memory warning
+                    logger.warning(f"Loading model {model_name} with system warning: {hardware_message}")
             
             # Free up space if needed
             self._ensure_capacity_for_model(model_record.memory_required_gb)
@@ -481,7 +495,9 @@ class ModelManager:
     
     def _ensure_capacity_for_model(self, required_memory_gb: float):
         """Free up capacity for a new model if needed."""
-        while not self._check_memory_constraints(required_memory_gb):
+        # Check if we need to unload models due to hard limits (not memory warnings)
+        can_load, message = self._check_memory_constraints(required_memory_gb)
+        while not can_load and "Maximum concurrent models" in message:
             # Find least recently used model to unload
             if not self._loaded_models:
                 break
@@ -493,6 +509,9 @@ class ModelManager:
             
             logger.info(f"Unloading LRU model {lru_model_name} to make space for new model")
             self.unload_model(lru_model_name)
+            
+            # Check again
+            can_load, message = self._check_memory_constraints(required_memory_gb)
             
             if len(self._loaded_models) == 0:
                 break

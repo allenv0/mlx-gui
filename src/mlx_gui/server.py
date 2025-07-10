@@ -25,7 +25,7 @@ from mlx_gui.huggingface_integration import get_huggingface_client
 from mlx_gui.model_manager import get_model_manager
 from mlx_gui.mlx_integration import GenerationConfig, get_inference_engine
 from mlx_gui.inference_queue_manager import get_inference_manager, QueuedRequest
-from mlx_gui.queued_inference import queued_generate_text, queued_generate_text_stream, queued_transcribe_audio, queued_generate_speech
+from mlx_gui.queued_inference import queued_generate_text, queued_generate_text_stream, queued_transcribe_audio, queued_generate_speech, queued_generate_embeddings, queued_generate_vision
 from mlx_gui import __version__
 
 logger = logging.getLogger(__name__)
@@ -144,6 +144,36 @@ class AudioSpeechRequest(BaseModel):
     speed: Optional[float] = 1.0  # 0.25 to 4.0
 
 
+class EmbeddingRequest(BaseModel):
+    """Request model for text embeddings."""
+    input: Union[str, List[str]]
+    model: str
+    encoding_format: Optional[str] = "float"  # float, base64
+    dimensions: Optional[int] = None  # Optional output dimensions
+    user: Optional[str] = None  # Optional user identifier
+
+
+class EmbeddingData(BaseModel):
+    """Single embedding data entry."""
+    object: str = "embedding"
+    embedding: List[float]
+    index: int
+
+
+class EmbeddingUsage(BaseModel):
+    """Token usage for embeddings."""
+    prompt_tokens: int
+    total_tokens: int
+
+
+class EmbeddingResponse(BaseModel):
+    """Response model for embeddings."""
+    object: str = "list"
+    data: List[EmbeddingData]
+    model: str
+    usage: EmbeddingUsage
+
+
 def _get_chat_template_from_hf(model_id: str) -> str:
     """Fetch chat template from HuggingFace model card."""
     try:
@@ -171,15 +201,21 @@ def _get_chat_template_from_hf(model_id: str) -> str:
     return None
 
 
-def _format_chat_prompt(messages: List[ChatMessage], model_name: str = None) -> str:
-    """Convert chat messages to a formatted prompt using the model's chat template."""
+def _format_chat_prompt(messages: List[ChatMessage], model_name: str = None) -> tuple[str, List[str]]:
+    """Convert chat messages to a formatted prompt using the model's chat template.
+    
+    Returns:
+        tuple: (formatted_prompt, list_of_image_paths)
+    """
     
     # Convert our messages to the format expected by chat templates
     chat_messages = []
+    all_images = []
+    
     for message in messages:
         content = message.content
         
-        # Handle multimodal content - extract text
+        # Handle multimodal content - extract text and images
         if isinstance(content, list):
             text_parts = []
             images = []
@@ -187,19 +223,42 @@ def _format_chat_prompt(messages: List[ChatMessage], model_name: str = None) -> 
                 if part.type == "text" and part.text:
                     text_parts.append(part.text)
                 elif part.type == "image_url" and part.image_url:
-                    # For now, we'll include a placeholder for the image
-                    # MLX models will need to handle the base64 image data
-                    images.append(part.image_url.get("url", ""))
+                    image_url = part.image_url.get("url", "")
+                    if image_url:
+                        images.append(image_url)
+                        all_images.append(image_url)
             
             # Combine text parts
             text_content = " ".join(text_parts)
             
-            # Add image information if present
-            if images:
-                image_info = f" [Image data: {len(images)} image(s)]"
-                text_content += image_info
-                
-            content = text_content
+            # For vision models, don't add placeholder text - let MLX-VLM handle it
+            if model_name:
+                try:
+                    from mlx_gui.model_manager import get_model_manager
+                    model_manager = get_model_manager()
+                    loaded_model = model_manager.get_model_for_inference(model_name)
+                    
+                    if loaded_model and hasattr(loaded_model.mlx_wrapper, 'model_type') and loaded_model.mlx_wrapper.model_type == "vision":
+                        # For vision models, keep text content as-is - MLX-VLM will handle image tokens
+                        content = text_content
+                    else:
+                        # For non-vision models, add image placeholder
+                        if images:
+                            image_info = f" [Image data: {len(images)} image(s)]"
+                            text_content += image_info
+                        content = text_content
+                except Exception:
+                    # Fallback to placeholder approach
+                    if images:
+                        image_info = f" [Image data: {len(images)} image(s)]"
+                        text_content += image_info
+                    content = text_content
+            else:
+                # No model specified, use placeholder
+                if images:
+                    image_info = f" [Image data: {len(images)} image(s)]"
+                    text_content += image_info
+                content = text_content
         
         chat_messages.append({"role": message.role, "content": content})
     
@@ -222,7 +281,7 @@ def _format_chat_prompt(messages: List[ChatMessage], model_name: str = None) -> 
                             add_generation_prompt=True
                         )
                         logger.debug(f"Used tokenizer chat template for {model_name}")
-                        return formatted_prompt
+                        return formatted_prompt, all_images
                     except Exception as e:
                         logger.warning(f"Failed to apply chat template for {model_name}: {e}")
         except Exception as e:
@@ -255,7 +314,7 @@ def _format_chat_prompt(messages: List[ChatMessage], model_name: str = None) -> 
                                     add_generation_prompt=True
                                 )
                                 logger.info(f"Used HF chat template for {model_name}")
-                                return formatted_prompt
+                                return formatted_prompt, all_images
                         except Exception as e:
                             logger.warning(f"Failed to apply HF chat template for {model_name}: {e}")
         except Exception as e:
@@ -309,7 +368,136 @@ def _format_chat_prompt(messages: List[ChatMessage], model_name: str = None) -> 
     
     formatted_prompt = "\n".join(prompt_parts)
     logger.info(f"Used fallback template for {model_name}: {'Gemma' if is_gemma else 'Phi' if is_phi else 'ChatML'}")
-    return formatted_prompt
+    return formatted_prompt, all_images
+
+
+async def _process_image_urls(image_urls: List[str]) -> List[str]:
+    """Process image URLs (base64 data or URLs) and save to temporary files."""
+    import base64
+    import tempfile
+    import os
+    from urllib.parse import urlparse
+    import httpx
+    
+    processed_images = []
+    
+    logger.error(f"🔧 _process_image_urls CALLED with {len(image_urls)} URLs")
+    
+    for i, image_url in enumerate(image_urls):
+        logger.debug(f"Processing image {i+1}/{len(image_urls)}: {image_url[:100]}...")
+        
+        try:
+            if image_url.startswith("data:image/"):
+                # Handle base64 encoded images
+                logger.debug("Processing base64 image data")
+                
+                if "," not in image_url:
+                    logger.error(f"Invalid base64 image format - no comma separator: {image_url[:50]}...")
+                    continue
+                
+                header, data = image_url.split(",", 1)
+                logger.debug(f"Base64 header: {header}")
+                logger.debug(f"Base64 data length: {len(data)} characters")
+                
+                try:
+                    image_data = base64.b64decode(data)
+                    logger.debug(f"Decoded image data: {len(image_data)} bytes")
+                except Exception as decode_error:
+                    logger.error(f"Base64 decode failed: {decode_error}")
+                    continue
+                
+                # Determine file extension from header
+                if "jpeg" in header or "jpg" in header:
+                    ext = ".jpg"
+                elif "png" in header:
+                    ext = ".png"
+                elif "gif" in header:
+                    ext = ".gif"
+                elif "webp" in header:
+                    ext = ".webp"
+                else:
+                    ext = ".jpg"  # Default
+                
+                logger.debug(f"Using file extension: {ext}")
+                
+                # Save to temporary file
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                        tmp.write(image_data)
+                        temp_path = tmp.name
+                        
+                    # Verify file was created and has content
+                    if os.path.exists(temp_path):
+                        file_size = os.path.getsize(temp_path)
+                        logger.debug(f"Created temporary file: {temp_path} ({file_size} bytes)")
+                        processed_images.append(temp_path)
+                    else:
+                        logger.error(f"Temporary file was not created: {temp_path}")
+                        
+                except Exception as file_error:
+                    logger.error(f"Failed to write temporary file: {file_error}")
+                    continue
+                    
+            elif image_url.startswith(("http://", "https://")):
+                # Handle URL images - download them
+                logger.debug(f"Downloading image from URL: {image_url}")
+                
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(image_url)
+                        response.raise_for_status()
+                        
+                        logger.debug(f"Downloaded {len(response.content)} bytes")
+                        
+                        # Determine extension from content-type or URL
+                        content_type = response.headers.get("content-type", "")
+                        if "jpeg" in content_type or "jpg" in content_type:
+                            ext = ".jpg"
+                        elif "png" in content_type:
+                            ext = ".png"
+                        elif "gif" in content_type:
+                            ext = ".gif"
+                        elif "webp" in content_type:
+                            ext = ".webp"
+                        else:
+                            # Try to get from URL
+                            parsed = urlparse(image_url)
+                            path_ext = os.path.splitext(parsed.path)[1].lower()
+                            ext = path_ext if path_ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"] else ".jpg"
+                        
+                        logger.debug(f"Using file extension: {ext}")
+                        
+                        # Save to temporary file
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+                            tmp.write(response.content)
+                            temp_path = tmp.name
+                            
+                        # Verify file was created
+                        if os.path.exists(temp_path):
+                            file_size = os.path.getsize(temp_path)
+                            logger.debug(f"Created temporary file: {temp_path} ({file_size} bytes)")
+                            processed_images.append(temp_path)
+                        else:
+                            logger.error(f"Temporary file was not created: {temp_path}")
+                            
+                except Exception as download_error:
+                    logger.error(f"Failed to download image from URL: {download_error}")
+                    continue
+                    
+            else:
+                logger.warning(f"Unsupported image URL format: {image_url[:100]}...")
+                continue
+                
+        except Exception as e:
+            logger.error(f"Failed to process image URL {image_url[:100]}...: {e}")
+            logger.debug(f"Exception type: {type(e)}, Args: {e.args}")
+            continue
+    
+    logger.info(f"Successfully processed {len(processed_images)} out of {len(image_urls)} images")
+    for i, path in enumerate(processed_images):
+        logger.debug(f"Processed image {i+1}: {path}")
+    
+    return processed_images
 
 
 @asynccontextmanager
@@ -457,11 +645,17 @@ def create_app() -> FastAPI:
                 model_record.memory_required_gb
             )
             
-            if not can_load:
+            # Only block for hardware compatibility, not memory warnings
+            if not can_load and "MLX requires Apple Silicon" in compatibility_message:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=compatibility_message
                 )
+            
+            # Store any warnings to include in response
+            memory_warning = None
+            if "warning" in compatibility_message.lower():
+                memory_warning = compatibility_message
             
             # Initiate loading
             success = await model_manager.load_model_async(
@@ -471,10 +665,14 @@ def create_app() -> FastAPI:
             )
             
             if success:
-                return {
+                response = {
                     "message": f"Model '{model_name}' loaded successfully",
                     "status": "loaded"
                 }
+                # Include memory warning if present
+                if memory_warning:
+                    response["memory_warning"] = memory_warning
+                return response
             else:
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -874,6 +1072,42 @@ def create_app() -> FastAPI:
                 detail="Error discovering vision models"
             )
     
+    @app.get("/v1/discover/embeddings")
+    async def discover_embedding_models(query: str = "", limit: int = 20):
+        """Discover embedding models using HuggingFace pipeline filters."""
+        try:
+            hf_client = get_huggingface_client()
+            models = hf_client.search_embedding_models(query=query, limit=limit)
+            
+            return {
+                "models": [
+                    {
+                        "id": model.id,
+                        "name": model.name,
+                        "author": model.author,
+                        "downloads": model.downloads,
+                        "likes": model.likes,
+                        "model_type": model.model_type,
+                        "size_gb": model.size_gb,
+                        "estimated_memory_gb": model.estimated_memory_gb,
+                        "mlx_compatible": model.mlx_compatible,
+                        "has_mlx_version": model.has_mlx_version,
+                        "mlx_repo_id": model.mlx_repo_id,
+                        "tags": model.tags,
+                        "description": model.description,
+                        "updated_at": model.updated_at
+                    }
+                    for model in models
+                ],
+                "total": len(models)
+            }
+        except Exception as e:
+            logger.error(f"Error discovering embedding models: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Error discovering embedding models"
+            )
+    
     @app.get("/v1/discover/compatible")
     async def discover_compatible_models(
         query: str = "",
@@ -1018,8 +1252,19 @@ def create_app() -> FastAPI:
                 )
                 messages = [default_system] + list(messages)
             
-            # Convert chat messages to prompt
-            prompt = _format_chat_prompt(messages, request.model)
+            # Convert chat messages to prompt and extract images
+            prompt, images = _format_chat_prompt(messages, request.model)
+            
+            # Debug: Check what images we actually extracted
+            logger.debug(f"Images extracted from _format_chat_prompt: {len(images)}")
+            for i, img in enumerate(images):
+                logger.debug(f"Image {i+1}: {img[:50]}...")
+            logger.debug(f"Request messages count: {len(request.messages)}")
+            for i, msg in enumerate(request.messages):
+                logger.debug(f"Message {i+1} role={msg.role}, content type={type(msg.content)}")
+                if isinstance(msg.content, list):
+                    for j, part in enumerate(msg.content):
+                        logger.debug(f"   Part {j+1}: type={part.type}, has_image_url={hasattr(part, 'image_url')}")
             
             # Enforce server-side maximum token limit
             MAX_TOKENS_LIMIT = 16384  # 16k max
@@ -1029,7 +1274,8 @@ def create_app() -> FastAPI:
                     detail=f"max_tokens cannot exceed {MAX_TOKENS_LIMIT}, requested {request.max_tokens}"
                 )
             
-            # Create generation config
+            # Create generation config  
+            logger.debug(f"Creating config - Images: {len(images)}")
             config = GenerationConfig(
                 max_tokens=request.max_tokens,
                 temperature=request.temperature,
@@ -1038,12 +1284,62 @@ def create_app() -> FastAPI:
                 repetition_penalty=request.repetition_penalty,
                 seed=request.seed
             )
+            logger.debug(f"Config created - Images: {len(images)}")
             
             import time
             import uuid
             
             completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
             created_time = int(time.time())
+            
+            # Check if this is a vision model and we have images
+            is_vision_model = False
+            processed_image_paths = []
+            
+            logger.debug(f"Processing model {request.model} - Images found: {len(images)}")
+            
+            if len(images) > 0:
+                logger.info(f"Processing {len(images)} images for vision model")
+                for i, img_url in enumerate(images):
+                    logger.debug(f"Image {i+1}: {img_url[:100]}...")
+                
+                # Check if the loaded model is a vision model
+                loaded_model = model_manager.get_model_for_inference(request.model)
+                logger.info(f"🤖 Loaded model check: {type(loaded_model) if loaded_model else None}")
+                
+                if loaded_model:
+                    logger.info(f"🔧 MLX wrapper type: {type(loaded_model.mlx_wrapper)}")
+                    if hasattr(loaded_model.mlx_wrapper, 'model_type'):
+                        model_type = loaded_model.mlx_wrapper.model_type
+                        logger.info(f"📋 Model type: {model_type}")
+                    else:
+                        logger.warning("❌ No model_type attribute found")
+                        model_type = "unknown"
+                
+                if loaded_model and hasattr(loaded_model.mlx_wrapper, 'model_type') and loaded_model.mlx_wrapper.model_type == "vision":
+                    is_vision_model = True
+                    logger.info(f"✅ Vision model confirmed - processing {len(images)} images")
+                    
+                    # Process images for vision model
+                    logger.debug(f"Processing {len(images)} images for vision model")
+                    processed_image_paths = await _process_image_urls(images)
+                    logger.debug(f"Image processing result: {len(processed_image_paths)} files created")
+                    logger.info(f"🖼️ Image processing result: {len(processed_image_paths)} files created")
+                    
+                    if processed_image_paths:
+                        logger.info("✅ Images successfully processed:")
+                        for i, path in enumerate(processed_image_paths):
+                            logger.info(f"  Image {i+1}: {path}")
+                    else:
+                        logger.error("❌ Image processing failed - no files created!")
+                        
+                else:
+                    logger.warning(f"❌ Images provided but model {request.model} is not a vision model. Images will be ignored.")
+                    if loaded_model:
+                        model_type = getattr(loaded_model.mlx_wrapper, 'model_type', 'unknown')
+                        logger.warning(f"Model type is: {model_type}")
+            else:
+                logger.info("ℹ️ No images provided in request")
             
             # Handle streaming vs non-streaming
             if request.stream:
@@ -1066,6 +1362,7 @@ def create_app() -> FastAPI:
                     yield f"data: {first_chunk.model_dump_json()}\n\n"
                     
                     # Stream the generation with transparent queuing
+                    # Note: Vision models don't support streaming yet, so we fall back to text generation for streaming
                     async for chunk in queued_generate_text_stream(request.model, prompt, config):
                         if chunk:
                             stream_chunk = ChatCompletionStreamResponse(
@@ -1105,7 +1402,23 @@ def create_app() -> FastAPI:
                 )
             else:
                 # Non-streaming response with transparent queuing
-                result = await queued_generate_text(request.model, prompt, config)
+                if is_vision_model and processed_image_paths:
+                    # Use vision generation - pass the file paths directly
+                    logger.debug(f"Using vision generation with {len(processed_image_paths)} images")
+                    result = await queued_generate_vision(request.model, prompt, processed_image_paths, config)
+                    
+                    # Clean up temporary image files
+                    for img_path in processed_image_paths:
+                        try:
+                            import os
+                            os.unlink(img_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to cleanup temporary image file {img_path}: {e}")
+                else:
+                    # Use regular text generation
+                    logger.debug(f"Using text generation - Model: {request.model}, Prompt length: {len(prompt)}")
+                    result = await queued_generate_text(request.model, prompt, config)
+                    logger.debug(f"Text generation result: {len(result.text if result and hasattr(result, 'text') else 'NO RESULT')} chars")
                 
                 response = ChatCompletionResponse(
                     id=completion_id,
@@ -1328,6 +1641,129 @@ def create_app() -> FastAPI:
                 detail=f"Speech generation failed: {str(e)}"
             )
     
+    @app.post("/v1/embeddings")
+    async def create_embeddings(
+        request: EmbeddingRequest,
+        db: Session = Depends(get_db_session),
+        api_key: Optional[str] = Depends(validate_api_key)
+    ):
+        """OpenAI-compatible embeddings endpoint."""
+        try:
+            # Log API key usage (for debugging)
+            if api_key:
+                logger.debug(f"API key provided for embeddings: {api_key[:8]}...")
+            else:
+                logger.debug("No API key provided for embeddings")
+            
+            # Check if model exists in database
+            model_record = db.query(Model).filter(Model.name == request.model).first()
+            if not model_record:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Embedding model '{request.model}' not found. Install it first with POST /v1/models/install"
+                )
+            
+            model_manager = get_model_manager()
+            
+            # Check if model is loaded, auto-load if not
+            loaded_model = model_manager.get_model_for_inference(request.model)
+            if not loaded_model:
+                logger.info(f"Embedding model {request.model} not loaded, attempting to load...")
+                success = await model_manager.load_model_async(
+                    model_name=request.model,
+                    model_path=model_record.path,
+                    priority=10  # High priority for embedding requests
+                )
+                if not success:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=f"Failed to load embedding model '{request.model}'"
+                    )
+            
+            # Convert input to list of strings
+            if isinstance(request.input, str):
+                texts = [request.input]
+            else:
+                texts = request.input
+            
+            # Validate inputs
+            if not texts:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Input texts cannot be empty"
+                )
+            
+            # Check for text length limits (8192 tokens max per text)
+            MAX_TEXT_LENGTH = 8192
+            for i, text in enumerate(texts):
+                if len(text.split()) > MAX_TEXT_LENGTH:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Text {i} exceeds maximum length of {MAX_TEXT_LENGTH} tokens"
+                    )
+            
+            # Generate embeddings with transparent queuing
+            result = await queued_generate_embeddings(request.model, texts)
+            
+            # Extract embeddings and usage info from result
+            embeddings = result.get("embeddings", [])
+            prompt_tokens = result.get("prompt_tokens", sum(len(text.split()) for text in texts))
+            total_tokens = result.get("total_tokens", prompt_tokens)
+            
+            # Validate embeddings
+            if not embeddings:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="No embeddings generated"
+                )
+            
+            # Apply dimensions reduction if requested
+            if request.dimensions and request.dimensions > 0:
+                for i, embedding in enumerate(embeddings):
+                    if len(embedding) > request.dimensions:
+                        embeddings[i] = embedding[:request.dimensions]
+            
+            # Encode embeddings based on format
+            if request.encoding_format == "base64":
+                import base64
+                import struct
+                encoded_embeddings = []
+                for embedding in embeddings:
+                    # Convert float list to bytes then base64
+                    bytes_data = b''.join(struct.pack('f', x) for x in embedding)
+                    b64_data = base64.b64encode(bytes_data).decode('utf-8')
+                    encoded_embeddings.append(b64_data)
+                embeddings = encoded_embeddings
+            
+            # Create response data
+            embedding_data = [
+                EmbeddingData(
+                    embedding=embeddings[i],
+                    index=i
+                )
+                for i in range(len(embeddings))
+            ]
+            
+            response = EmbeddingResponse(
+                data=embedding_data,
+                model=request.model,
+                usage=EmbeddingUsage(
+                    prompt_tokens=prompt_tokens,
+                    total_tokens=total_tokens
+                )
+            )
+            
+            return response
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Error in embeddings endpoint: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Embeddings generation failed: {str(e)}"
+            )
+    
     @app.get("/v1/models")
     async def list_models_openai_format(
         db: Session = Depends(get_db_session),
@@ -1389,11 +1825,17 @@ def create_app() -> FastAPI:
             estimated_memory = model_info.estimated_memory_gb or 4.0  # Default estimate
             can_load, compatibility_message = system_monitor.check_model_compatibility(estimated_memory)
             
-            if not can_load:
+            # Only block for hardware compatibility, not memory warnings
+            if not can_load and "MLX requires Apple Silicon" in compatibility_message:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=compatibility_message
                 )
+            
+            # Store any warnings to include in response
+            memory_warning = None
+            if "warning" in compatibility_message.lower():
+                memory_warning = compatibility_message
             
             # Use provided name or default to model name
             model_name = request.name or model_info.name
@@ -1435,13 +1877,17 @@ def create_app() -> FastAPI:
             db.add(new_model)
             db.commit()
             
-            return {
+            response = {
                 "message": f"Model '{model_name}' installed successfully",
                 "model_name": model_name,
                 "model_id": request.model_id,
                 "estimated_memory_gb": estimated_memory,
                 "status": "installed"
             }
+            # Include memory warning if present
+            if memory_warning:
+                response["memory_warning"] = memory_warning
+            return response
             
         except HTTPException:
             raise

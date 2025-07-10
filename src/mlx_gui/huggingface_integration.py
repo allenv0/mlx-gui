@@ -430,6 +430,20 @@ class HuggingFaceClient:
         """Determine model type from tags and metadata."""
         tags_lower = [tag.lower() for tag in tags]
         
+        # Check for embedding models first (by pipeline tag)
+        pipeline_tag = getattr(model, 'pipeline_tag', '')
+        if pipeline_tag == 'feature-extraction':
+            return 'embedding'
+        
+        # Check for embedding models by tags
+        if any(tag in tags_lower for tag in ['embedding', 'sentence-transformers', 'feature-extraction']):
+            return 'embedding'
+        
+        # Check for embedding models by name patterns
+        model_name_lower = model.id.lower()
+        if any(pattern in model_name_lower for pattern in ['embedding', 'bge-', 'e5-', 'all-minilm', 'sentence']):
+            return 'embedding'
+        
         # Check for multimodal capabilities
         if any(tag in tags_lower for tag in ['multimodal', 'vision', 'image-text', 'vlm']):
             return 'multimodal'
@@ -442,8 +456,7 @@ class HuggingFaceClient:
         if any(tag in tags_lower for tag in ['audio', 'speech', 'automatic-speech-recognition', 'text-to-speech', 'tts', 'whisper']):
             return 'audio'
         
-        # Default to text for language models
-        pipeline_tag = getattr(model, 'pipeline_tag', '')
+        # Check for text generation models
         if pipeline_tag in ['text-generation', 'text2text-generation', 'conversational']:
             return 'text'
         
@@ -611,6 +624,141 @@ class HuggingFaceClient:
         
         stt_models.sort(key=lambda x: x.downloads, reverse=True)
         return stt_models[:limit]
+    
+    def search_embedding_models(self, query: str = "", limit: int = 20) -> List[ModelInfo]:
+        """Search specifically for embedding models using HuggingFace pipeline filters."""
+        try:
+            embedding_models = []
+            models_dict = {}
+            
+            # Method 1: Use pipeline_tag=feature-extraction (the standard for embedding models)
+            try:
+                logger.info("Searching for embedding models using pipeline_tag=feature-extraction")
+                
+                # This matches: https://huggingface.co/models?pipeline_tag=feature-extraction&sort=trending
+                pipeline_models = list_models(
+                    pipeline_tag="feature-extraction",
+                    sort="downloads",
+                    limit=100,  # Get more to filter from
+                    direction=-1,
+                    token=self.token
+                )
+                
+                # Convert generator to list and count
+                pipeline_models_list = list(pipeline_models)
+                logger.info(f"Found {len(pipeline_models_list)} feature-extraction models")
+                
+                # Filter for MLX-compatible ones manually
+                mlx_count = 0
+                for model in pipeline_models_list:
+                    # Check if model has MLX in tags or is from mlx-community
+                    model_tags = getattr(model, 'tags', []) or []
+                    is_mlx = (any(tag.lower() in self.mlx_tags for tag in model_tags) or 
+                             model.id.startswith('mlx-community/') or
+                             'mlx' in model.id.lower())
+                    
+                    if is_mlx:
+                        models_dict[model.id] = model
+                        mlx_count += 1
+                        logger.debug(f"Found MLX embedding model: {model.id}")
+                
+                logger.info(f"Found {mlx_count} MLX-compatible embedding models from pipeline filter")
+                
+            except Exception as e:
+                logger.warning(f"Error using HuggingFace pipeline_tag filter for embeddings: {e}")
+            
+            # Method 2: Search with MLX tag and embedding-related terms
+            try:
+                embedding_queries = []
+                if query:
+                    embedding_queries.append(f"{query} embedding")
+                    embedding_queries.append(f"{query} sentence")
+                else:
+                    embedding_queries = ["embedding mlx", "sentence mlx", "embed mlx"]
+                
+                for embedding_query in embedding_queries:
+                    try:
+                        tag_models = list_models(
+                            tags=["mlx"],
+                            search=embedding_query,
+                            sort="downloads", 
+                            limit=30,
+                            direction=-1,
+                            token=self.token
+                        )
+                        
+                        # Convert generator to list and count
+                        tag_models_list = list(tag_models)
+                        logger.info(f"Found {len(tag_models_list)} models with MLX tag and '{embedding_query}' search")
+                        
+                        for model in tag_models_list:
+                            models_dict[model.id] = model
+                            logger.debug(f"Found embedding model via tag search: {model.id}")
+                            
+                    except Exception as e:
+                        logger.warning(f"Error searching with query '{embedding_query}': {e}")
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"Error in embedding tag search: {e}")
+            
+            # Method 3: Search for known embedding model patterns
+            try:
+                embedding_patterns = ["Qwen3-Embedding", "bge-", "e5-", "all-MiniLM", "sentence-transformers"]
+                for pattern in embedding_patterns:
+                    try:
+                        pattern_models = list_models(
+                            search=pattern,
+                            sort="downloads", 
+                            limit=20,
+                            direction=-1,
+                            token=self.token
+                        )
+                        
+                        pattern_models_list = list(pattern_models)
+                        logger.info(f"Found {len(pattern_models_list)} models with pattern '{pattern}'")
+                        
+                        for model in pattern_models_list:
+                            # Check if model has MLX in tags or is from mlx-community
+                            model_tags = getattr(model, 'tags', []) or []
+                            is_mlx = (any(tag.lower() in self.mlx_tags for tag in model_tags) or 
+                                     model.id.startswith('mlx-community/') or
+                                     'mlx' in model.id.lower())
+                            
+                            if is_mlx:
+                                models_dict[model.id] = model
+                                logger.debug(f"Found embedding model via pattern search: {model.id}")
+                                
+                    except Exception as e:
+                        logger.warning(f"Error searching with pattern '{pattern}': {e}")
+                        continue
+                        
+            except Exception as e:
+                logger.warning(f"Error in embedding pattern search: {e}")
+            
+            # Convert dict to list and extract model info
+            models = list(models_dict.values())
+            logger.info(f"Total unique embedding models found: {len(models)}")
+            
+            for model in models:
+                try:
+                    info = self._extract_model_info(model)
+                    if info:
+                        # Mark as embedding type
+                        info.model_type = 'embedding'
+                        embedding_models.append(info)
+                except Exception as e:
+                    logger.warning(f"Error processing embedding model {model.id}: {e}")
+                    continue
+            
+            # Sort by downloads and return top results
+            embedding_models.sort(key=lambda x: x.downloads, reverse=True)
+            logger.info(f"Returning {min(len(embedding_models), limit)} embedding models")
+            return embedding_models[:limit]
+            
+        except Exception as e:
+            logger.error(f"Error searching embedding models: {e}")
+            return []
     
     def search_vision_models(self, query: str = "", limit: int = 10) -> List[ModelInfo]:
         """Search specifically for Vision/Multimodal models using HuggingFace pipeline filters."""

@@ -194,6 +194,9 @@
                             <button onclick="loadSmallModels()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm">
                                 <i class="fas fa-feather mr-1"></i>Small (&lt;10GB)
                             </button>
+                            <button onclick="loadEmbeddingModels()" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm" style="background-color: #059669 !important;">
+                                <i class="fas fa-vector-square mr-1"></i>Embeddings
+                            </button>
                         </div>
                     </div>
 
@@ -439,6 +442,7 @@
                 case 'multimodal': return 'bg-purple-700 text-purple-300';
                 case 'vision': return 'bg-pink-700 text-pink-300';
                 case 'audio': return 'bg-orange-700 text-orange-300';
+                case 'embedding': return 'bg-emerald-700 text-emerald-300';
                 default: return 'bg-gray-700 text-gray-300';
             }
         }
@@ -449,6 +453,7 @@
                 case 'multimodal': return 'Multimodal';
                 case 'vision': return 'Vision';
                 case 'audio': return 'Audio';
+                case 'embedding': return 'Embedding';
                 default: return modelType || 'Unknown';
             }
         }
@@ -721,6 +726,18 @@
                 renderDiscoveryResults(smallModels);
             } catch (error) {
                 showToast('Failed to load small models', 'error');
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function loadEmbeddingModels() {
+            try {
+                showLoading('Loading embedding models...');
+                const response = await apiCall('/v1/discover/embeddings?limit=20');
+                renderDiscoveryResults(response.models || []);
+            } catch (error) {
+                showToast('Failed to load embedding models', 'error');
             } finally {
                 hideLoading();
             }

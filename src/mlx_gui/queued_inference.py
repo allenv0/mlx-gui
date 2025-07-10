@@ -340,3 +340,213 @@ async def queued_generate_text_stream(model_name: str, prompt: str, config: Gene
     """Drop-in replacement for model_manager.generate_text_stream() with queuing."""
     async for chunk in generate_text_stream_queued(model_name, prompt, config):
         yield chunk
+
+
+async def queued_generate_embeddings(
+    model_name: str,
+    texts: list[str],
+    priority: int = 5
+):
+    """
+    Generate embeddings with transparent queuing.
+    
+    Drop-in replacement for loaded_model.mlx_wrapper.generate_embeddings() with queuing.
+    """
+    model_manager = get_model_manager()
+    inference_manager = get_inference_manager()
+    
+    # Check if we can process immediately
+    queue_status = inference_manager.get_queue_status(model_name)
+    
+    if queue_status.get("can_accept_immediate", False):
+        # Model is available, process directly
+        logger.debug(f"Processing {model_name} embeddings immediately")
+        loaded_model = model_manager.get_model_for_inference(model_name)
+        if not loaded_model:
+            raise RuntimeError(f"Model {model_name} is not loaded")
+        
+        # Check if this is an embedding model
+        if not hasattr(loaded_model.mlx_wrapper, 'generate_embeddings'):
+            raise RuntimeError(f"Model {model_name} is not an embedding model")
+        
+        result = loaded_model.mlx_wrapper.generate_embeddings(texts)
+        
+        # Ensure result is in expected format
+        if isinstance(result, list):
+            return {
+                "embeddings": result,
+                "prompt_tokens": sum(len(text.split()) for text in texts),
+                "total_tokens": sum(len(text.split()) for text in texts)
+            }
+        else:
+            return result
+    
+    # Model is busy, use queue
+    logger.debug(f"Queuing {model_name} embeddings request (active: {queue_status.get('active_requests', 0)})")
+    
+    session_id = str(uuid.uuid4())
+    
+    # Create dummy config for embedding requests
+    dummy_config = GenerationConfig(max_tokens=1)
+    
+    # Create queued request
+    queued_request = QueuedRequest(
+        session_id=session_id,
+        model_name=model_name,
+        prompt="",  # Not used for embeddings
+        config=dummy_config,
+        priority=priority,
+        request_type="embeddings",
+        audio_data={  # Reuse audio_data field for embedding data
+            "texts": texts
+        }
+    )
+    
+    # Use a completion future to wait for result
+    result_future = asyncio.Future()
+    
+    def completion_callback(request_id: str, success: bool, result):
+        if success:
+            result_future.set_result(result)
+        else:
+            result_future.set_exception(Exception(result))
+    
+    queued_request.callback = completion_callback
+    
+    # Queue the request
+    request_id = await inference_manager.queue_request(queued_request)
+    
+    # Wait for completion with timeout
+    try:
+        result = await asyncio.wait_for(result_future, timeout=300.0)  # 5 minute timeout
+        return result
+    except asyncio.TimeoutError:
+        raise RuntimeError("Embeddings request timed out after 5 minutes")
+
+
+async def queued_generate_vision(
+    model_name: str, 
+    prompt: str, 
+    image_file_paths: list[str],
+    config: GenerationConfig,
+    priority: int = 5
+):
+    """
+    Generate text with images using vision models with transparent queuing.
+    
+    Args:
+        model_name: Name of the vision model to use
+        prompt: Text prompt
+        image_file_paths: List of temporary image file paths (not URLs)
+        config: Generation configuration
+        priority: Request priority (1-10, higher = more urgent)
+        
+    Returns:
+        GenerationResult with text response and usage stats
+    """
+    inference_manager = get_inference_manager()
+    
+    # Check if we can process immediately
+    queue_status = inference_manager.get_queue_status(model_name)
+    
+    if queue_status.get("can_accept_immediate", False):
+        # Model is available, process directly
+        model_manager = get_model_manager()
+        loaded_model = model_manager.get_model_for_inference(model_name)
+        
+        if loaded_model:
+            try:
+                if hasattr(loaded_model.mlx_wrapper, 'generate_with_images'):
+                    result = loaded_model.mlx_wrapper.generate_with_images(prompt, image_file_paths, config)
+                    logger.debug(f"Direct vision generation for {model_name}: {len(result.text)} chars")
+                    
+                    # Update model usage count for direct vision generation
+                    try:
+                        from .database import get_database_manager
+                        from .models import Model
+                        db_manager = get_database_manager()
+                        with db_manager.get_session() as session:
+                            model_record = session.query(Model).filter(Model.name == model_name).first()
+                            if model_record:
+                                model_record.increment_use_count()
+                                session.commit()
+                                logger.debug(f"Incremented usage count for vision model {model_name}")
+                    except Exception as usage_error:
+                        logger.error(f"Failed to update usage count for vision model {model_name}: {usage_error}")
+                    
+                    return result
+                else:
+                    # Fallback to regular generation if not a vision model
+                    result = loaded_model.mlx_wrapper.generate(prompt, config)
+                    logger.debug(f"Fallback text generation for {model_name}: {len(result.text)} chars")
+                    
+                    # Update model usage count for direct text generation fallback
+                    try:
+                        from .database import get_database_manager
+                        from .models import Model
+                        db_manager = get_database_manager()
+                        with db_manager.get_session() as session:
+                            model_record = session.query(Model).filter(Model.name == model_name).first()
+                            if model_record:
+                                model_record.increment_use_count()
+                                session.commit()
+                                logger.debug(f"Incremented usage count for fallback text model {model_name}")
+                    except Exception as usage_error:
+                        logger.error(f"Failed to update usage count for fallback text model {model_name}: {usage_error}")
+                    
+                    return result
+            except Exception as e:
+                logger.warning(f"Direct vision generation failed for {model_name}, falling back to queue: {e}")
+    
+    # Model is busy or not loaded, queue the request
+    logger.info(f"Queuing vision generation request for {model_name} (priority: {priority})")
+    
+    session_id = str(uuid.uuid4())
+    result_future = asyncio.Future()
+    
+    # Create queued request following the established pattern
+    queued_request = QueuedRequest(
+        session_id=session_id,
+        model_name=model_name,
+        prompt=prompt,  # Use the actual prompt
+        config=config,  # Use the actual config
+        priority=priority,
+        request_type="vision_generation",
+        audio_data={  # Reuse audio_data field for vision data
+            "image_file_paths": image_file_paths,  # Store file paths, not URLs
+            "original_prompt": prompt  # Store original prompt in case needed
+        }
+    )
+    
+    # Set up completion callback
+    def completion_callback(request_id: str, success: bool, result):
+        if success:
+            # Convert output_data back to GenerationResult
+            if isinstance(result, dict) and result.get("type") == "vision_generation":
+                from mlx_gui.mlx_integration import GenerationResult
+                generation_result = GenerationResult(
+                    text=result.get("text", ""),
+                    prompt=result.get("prompt", ""),
+                    total_tokens=result.get("total_tokens", 0),
+                    prompt_tokens=result.get("prompt_tokens", 0),
+                    completion_tokens=result.get("completion_tokens", 0),
+                    generation_time_seconds=result.get("generation_time_seconds", 0.0),
+                    tokens_per_second=result.get("tokens_per_second", 0.0)
+                )
+                result_future.set_result(generation_result)
+            else:
+                result_future.set_result(result)
+        else:
+            result_future.set_exception(Exception(result))
+    
+    queued_request.callback = completion_callback
+    
+    # Queue the request
+    request_id = await inference_manager.queue_request(queued_request)
+    
+    # Wait for completion with timeout
+    try:
+        result = await asyncio.wait_for(result_future, timeout=300.0)  # 5 minute timeout
+        return result
+    except asyncio.TimeoutError:
+        raise RuntimeError("Vision generation request timed out after 5 minutes")

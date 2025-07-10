@@ -23,7 +23,7 @@ pip install pyinstaller
 
 # Check for critical dependencies
 echo "🔍 Checking critical dependencies..."
-CRITICAL_DEPS=("mlx-lm" "mlx" "rumps" "fastapi" "uvicorn" "transformers" "huggingface-hub" "mlx-whisper" "parakeet-mlx")
+CRITICAL_DEPS=("mlx-lm" "mlx" "rumps" "fastapi" "uvicorn" "transformers" "huggingface-hub" "mlx-whisper" "parakeet-mlx" "mlx-vlm")
 MISSING_DEPS=""
 
 for dep in "${CRITICAL_DEPS[@]}"; do
@@ -34,19 +34,21 @@ done
 
 if [ -n "$MISSING_DEPS" ]; then
     echo "❌ Missing critical dependencies:$MISSING_DEPS"
-    echo "💡 Install with: pip install -e \".[app,audio]\""
+    echo "💡 Install with: pip install -e \".[app,audio,vision]\""
     echo "💡 Or from requirements: pip install -r requirements.txt"
     echo "💡 For audio support: pip install mlx-whisper parakeet-mlx"
+    echo "💡 For vision support: pip install mlx-vlm"
     exit 1
 fi
 
 echo "✅ All critical dependencies found"
 
-# Ensure latest audio dependencies
-echo "📦 Ensuring latest audio dependencies..."
+# Ensure latest audio and vision dependencies
+echo "📦 Ensuring latest audio and vision dependencies..."
 pip install parakeet-mlx -U
 pip install av -U
 pip install ffmpeg-binaries -U
+pip install mlx-vlm -U
 
 # Clean previous builds
 echo "🧹 Cleaning previous builds..."
@@ -209,6 +211,27 @@ hiddenimports += [
 ]
 EOF
 
+# Create custom hook for mlx-vlm
+cat > hooks/hook-mlx_vlm.py << 'EOF'
+from PyInstaller.utils.hooks import collect_all
+
+datas, binaries, hiddenimports = collect_all('mlx_vlm')
+
+# Additional hidden imports for mlx-vlm
+hiddenimports += [
+    'mlx_vlm.generate',
+    'mlx_vlm.load',
+    'mlx_vlm.utils',
+    'mlx_vlm.prompt_utils',
+    'mlx_vlm.models',
+    'mlx_vlm.models.base',
+    'mlx_vlm.models.gemma3n',
+    'mlx_vlm.models.qwen2_vl',
+    'mlx_vlm.models.llava',
+    'mlx_vlm.models.idefics',
+]
+EOF
+
 # Create runtime hook for ffmpeg-binaries to ensure FFmpeg is in PATH
 mkdir -p rthooks
 cat > rthooks/pyi_rth_ffmpeg_binaries.py << 'EOF'
@@ -334,6 +357,11 @@ pyinstaller src/mlx_gui/app_main.py \
     --hidden-import=mlx.utils \
     --hidden-import=mlx_whisper \
     --hidden-import=mlx_whisper.transcribe \
+    --hidden-import=mlx_vlm \
+    --hidden-import=mlx_vlm.generate \
+    --hidden-import=mlx_vlm.load \
+    --hidden-import=mlx_vlm.utils \
+    --hidden-import=mlx_vlm.prompt_utils \
     --hidden-import=parakeet_mlx \
     --hidden-import=dacite \
     --hidden-import=librosa \
@@ -393,6 +421,7 @@ pyinstaller src/mlx_gui/app_main.py \
     --collect-all=mlx \
     --collect-all=mlx_lm \
     --collect-all=mlx_whisper \
+    --collect-all=mlx_vlm \
     --collect-all=parakeet_mlx \
     --collect-all=librosa \
     --collect-all=dacite \
@@ -497,7 +526,7 @@ if [ -d "dist/MLX-GUI.app" ]; then
     echo "📋 App Info:"
     echo "   - Size: $(du -sh dist/MLX-GUI.app | cut -f1)"
     echo "   - Type: TRUE STANDALONE (no Python required!)"
-    echo "   - Includes: All Python runtime, MLX binaries, audio support, and dependencies"
+    echo "   - Includes: All Python runtime, MLX binaries, audio & vision support, and dependencies"
     if [ -n "$CERT_NAME" ]; then
         echo "   - Code Signed: ✅ (no security warnings)"
     else
@@ -519,4 +548,4 @@ echo "🔗 Next steps:"
 echo "   • Test the app: open dist/MLX-GUI.app"
 echo "   • Create DMG installer for easy distribution"
 echo "   • App is ready for sharing with anyone - no setup required!"
-echo "   • Audio support included: Whisper and Parakeet models work out of the box" 
+echo "   • Audio & Vision support included: Whisper, Parakeet, and MLX-VLM models work out of the box" 
