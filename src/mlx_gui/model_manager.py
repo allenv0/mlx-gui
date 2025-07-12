@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Dict, Optional, Any, List, Callable, AsyncGenerator, Tuple
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from functools import lru_cache
 
 import mlx.core as mx
 from sqlalchemy.orm import Session
@@ -27,8 +28,11 @@ from mlx_gui.mlx_integration import get_inference_engine, MLXModelWrapper, Gener
 
 logger = logging.getLogger(__name__)
 
-
-# Remove the broken custom executor - we'll use simple threading
+# Global cache for model memory calculations
+_model_memory_cache: Dict[str, float] = {}
+_model_memory_cache_lock = threading.RLock()
+_model_memory_cache_timestamp = 0
+_model_memory_cache_ttl = 300  # 5 minutes TTL
 
 
 class LoadingStatus(Enum):
@@ -158,6 +162,9 @@ class ModelManager:
         self._queue_worker_running = False
         self._shutdown_requested = False
         
+        # Thread pool for non-blocking operations
+        self._thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="model_manager")
+        
         # Register cleanup on exit
         import atexit
         atexit.register(self._force_cleanup)
@@ -166,6 +173,10 @@ class ModelManager:
         self._auto_unload_enabled = True
         self._inactivity_timeout = self._get_inactivity_timeout()
         self._cleanup_interval = 60  # seconds
+        
+        # Performance optimizations
+        self._last_cleanup_time = time.time()
+        self._model_memory_cache = {}
         
         # Don't start background workers immediately - start them lazily
     
@@ -199,109 +210,137 @@ class ModelManager:
                 daemon=True
             )
             self._queue_worker_thread.start()
+            logger.info("Model loading queue worker started")
     
     def _start_cleanup_worker(self):
-        """Start the cleanup worker for auto-unloading."""
-        if self._cleanup_worker_thread is None or not self._cleanup_worker_thread.is_alive():
-            # Create daemon thread that won't prevent shutdown
+        """Start the cleanup worker."""
+        if not hasattr(self, '_cleanup_worker_running') or not self._cleanup_worker_running:
+            self._cleanup_worker_running = True
             self._cleanup_worker_thread = threading.Thread(
                 target=self._cleanup_worker,
                 name="model_cleanup",
                 daemon=True
             )
             self._cleanup_worker_thread.start()
+            logger.info("Model cleanup worker started")
     
     def _queue_worker(self):
         """Background worker that processes the loading queue."""
         logger.info("Model loading queue worker started")
         
-        while self._queue_worker_running:
+        while not self._shutdown_requested:
             try:
-                request = self._loading_queue.get_next_request(timeout=5.0)
+                # Get next request with timeout
+                request = self._loading_queue.get_next_request(timeout=1.0)
+                
                 if request:
-                    logger.info(f"Processing load request for {request.model_name}")
-                    try:
-                        self._load_model_sync(request)
-                    except Exception as e:
-                        logger.error(f"Error loading model {request.model_name}: {e}")
-                        self._set_loading_status(request.model_name, LoadingStatus.FAILED)
+                    # Process in thread pool to avoid blocking
+                    self._thread_pool.submit(self._load_model_sync, request)
+                else:
+                    # No requests, sleep briefly
+                    time.sleep(0.1)
+                    
             except Exception as e:
-                logger.error(f"Queue worker error: {e}")
-                time.sleep(1)
+                logger.error(f"Error in queue worker: {e}")
+                time.sleep(1.0)  # Wait longer on errors
+        
+        logger.info("Model loading queue worker stopped")
     
     def _cleanup_worker(self):
-        """Background worker for auto-unloading inactive models."""
+        """Background worker that cleans up inactive models."""
         logger.info("Model cleanup worker started")
         
         while not self._shutdown_requested:
             try:
-                if self._auto_unload_enabled:
-                    self._cleanup_inactive_models()
+                current_time = time.time()
                 
-                # Sleep in smaller intervals to be more responsive to shutdown
-                for _ in range(self._cleanup_interval):
-                    if self._shutdown_requested:
-                        break
-                    time.sleep(1)
+                # Only run cleanup every cleanup_interval seconds
+                if current_time - self._last_cleanup_time >= self._cleanup_interval:
+                    self._cleanup_inactive_models()
+                    self._last_cleanup_time = current_time
+                
+                # Sleep for a shorter interval
+                time.sleep(10.0)  # Check every 10 seconds instead of 60
+                
             except Exception as e:
-                logger.error(f"Cleanup worker error: {e}")
-                time.sleep(1)
+                logger.error(f"Error in cleanup worker: {e}")
+                time.sleep(30.0)  # Wait longer on errors
         
         logger.info("Model cleanup worker stopped")
     
     def shutdown(self):
-        """Shutdown the model manager and all background workers."""
-        self._force_cleanup()
+        """Shutdown the model manager."""
+        self._shutdown_requested = True
+        self._thread_pool.shutdown(wait=True)
+        logger.info("Model manager shutdown complete")
     
     def _force_cleanup(self):
-        """Force cleanup - called on exit."""
-        self._shutdown_requested = True
-        self._queue_worker_running = False
-        
-        # Daemon threads will automatically be killed when main process exits
-        # No need to explicitly wait for or kill them
-        logger.info("Model manager cleanup completed")
+        """Force cleanup on exit."""
+        try:
+            with self._lock:
+                for model_name in list(self._loaded_models.keys()):
+                    self._unload_model_internal(model_name)
+        except Exception as e:
+            logger.error(f"Error during force cleanup: {e}")
     
     def _cleanup_inactive_models(self):
-        """Unload models that have been inactive for too long."""
-        cutoff_time = datetime.utcnow() - self._inactivity_timeout
-        models_to_unload = []
+        """Clean up models that have been inactive for too long."""
+        if not self._auto_unload_enabled:
+            return
+        
+        current_time = datetime.utcnow()
+        cutoff_time = current_time - self._inactivity_timeout
         
         with self._lock:
+            models_to_unload = []
             for model_name, loaded_model in self._loaded_models.items():
                 if loaded_model.last_used_at < cutoff_time:
                     models_to_unload.append(model_name)
-        
-        for model_name in models_to_unload:
-            logger.info(f"Auto-unloading inactive model: {model_name}")
-            self.unload_model(model_name)
+            
+            # Unload inactive models
+            for model_name in models_to_unload:
+                logger.info(f"Auto-unloading inactive model: {model_name}")
+                self._unload_model_internal(model_name)
     
     def _set_loading_status(self, model_name: str, status: LoadingStatus):
-        """Update model loading status."""
-        with self._lock:
-            self._loading_status[model_name] = status
-            
-        # Update database
+        """Set the loading status for a model."""
+        self._loading_status[model_name] = status
+        
+        # Update database status
         try:
             db_manager = get_database_manager()
             with db_manager.get_session() as session:
-                model = session.query(Model).filter(Model.name == model_name).first()
-                if model:
-                    if status == LoadingStatus.LOADING:
-                        model.status = ModelStatus.LOADING.value
-                    elif status == LoadingStatus.LOADED:
-                        model.status = ModelStatus.LOADED.value
-                        model.last_used_at = datetime.utcnow()
+                model_record = session.query(Model).filter(Model.name == model_name).first()
+                if model_record:
+                    if status == LoadingStatus.LOADED:
+                        model_record.status = ModelStatus.LOADED.value
+                    elif status == LoadingStatus.LOADING:
+                        model_record.status = ModelStatus.LOADING.value
                     elif status == LoadingStatus.FAILED:
-                        model.status = ModelStatus.FAILED.value
-                    else:
-                        model.status = ModelStatus.UNLOADED.value
+                        model_record.status = ModelStatus.FAILED.value
+                    elif status == LoadingStatus.IDLE:
+                        model_record.status = ModelStatus.UNLOADED.value
                     session.commit()
         except Exception as e:
             logger.error(f"Error updating model status in database: {e}")
     
+    @lru_cache(maxsize=128)
     def _calculate_actual_memory_usage(self, model_path: str) -> float:
-        """Calculate the actual memory usage based on file sizes + overhead."""
+        """Calculate the actual memory usage based on file sizes + overhead with caching."""
+        global _model_memory_cache, _model_memory_cache_timestamp
+        
+        current_time = time.time()
+        
+        # Check cache first
+        with _model_memory_cache_lock:
+            if current_time - _model_memory_cache_timestamp < _model_memory_cache_ttl:
+                if model_path in _model_memory_cache:
+                    return _model_memory_cache[model_path]
+            else:
+                # Cache expired, clear it
+                _model_memory_cache.clear()
+                _model_memory_cache_timestamp = current_time
+        
         total_size_bytes = 0
         
         try:
@@ -332,6 +371,10 @@ class ModelManager:
             # Round to one decimal place
             actual_memory_gb = round(actual_memory_gb, 1)
             
+            # Cache the result
+            with _model_memory_cache_lock:
+                _model_memory_cache[model_path] = max(actual_memory_gb, 0.1)
+            
             logger.info(f"Model {model_path} -> {actual_path} file size: {file_size_gb:.1f}GB, "
                        f"with overhead: {actual_memory_gb:.1f}GB "
                        f"(multiplier: {overhead_multiplier})")
@@ -343,34 +386,25 @@ class ModelManager:
             # Fallback to a reasonable default
             return 2.0
     
+    @lru_cache(maxsize=128)
     def _resolve_model_path(self, model_path: str) -> str:
-        """Resolve model path to actual filesystem location."""
-        # If it's already a local path that exists, use it
-        if os.path.exists(model_path):
+        """Resolve model path with caching for better performance."""
+        if model_path.startswith("~"):
+            return os.path.expanduser(model_path)
+        
+        # Handle HuggingFace cache paths
+        if "huggingface" in model_path.lower() or "/.cache/huggingface/" in model_path:
+            # This is already a resolved path
             return model_path
         
-        # If it looks like a HuggingFace model ID, find it in cache
+        # Check if it's a HuggingFace model ID
         if "/" in model_path and not os.path.exists(model_path):
-            # Convert HF model ID to cache path
-            cache_dir = os.path.join(os.path.expanduser("~"), ".cache", "mlx-gui")
-            
-            # Convert model ID to cache directory name
-            # "lmstudio-community/DeepSeek-R1-0528-Qwen3-8B-MLX-4bit" -> "models--lmstudio-community--DeepSeek-R1-0528-Qwen3-8B-MLX-4bit"
-            cache_name = "models--" + model_path.replace("/", "--")
-            cache_path = os.path.join(cache_dir, cache_name)
-            
-            if os.path.exists(cache_path):
-                # Find the actual model files in snapshots subdirectory
-                snapshots_dir = os.path.join(cache_path, "snapshots")
-                if os.path.exists(snapshots_dir):
-                    # Get the first (and usually only) snapshot directory
-                    snapshot_dirs = [d for d in os.listdir(snapshots_dir) if os.path.isdir(os.path.join(snapshots_dir, d))]
-                    if snapshot_dirs:
-                        actual_path = os.path.join(snapshots_dir, snapshot_dirs[0])
-                        logger.debug(f"Resolved HF model {model_path} to {actual_path}")
-                        return actual_path
+            try:
+                from huggingface_hub import snapshot_download
+                return snapshot_download(repo_id=model_path, local_files_only=True)
+            except Exception:
+                pass
         
-        # Fallback: return original path
         return model_path
     
     def _check_memory_constraints(self, required_memory_gb: float) -> Tuple[bool, str]:
@@ -471,129 +505,126 @@ class ModelManager:
             
             # Call callback if provided
             if request.callback:
-                request.callback(model_name, True, None)
-                
+                try:
+                    request.callback(model_name, True, None)
+                except Exception as e:
+                    logger.error(f"Error in model load callback: {e}")
+            
         except Exception as e:
-            error_msg = f"Failed to load model {model_name}: {e}"
-            logger.error(error_msg)
+            logger.error(f"Error loading model {model_name}: {e}")
             self._set_loading_status(model_name, LoadingStatus.FAILED)
             
-            # Update database with error
-            try:
-                db_manager = get_database_manager()
-                with db_manager.get_session() as session:
-                    model_record = session.query(Model).filter(Model.name == model_name).first()
-                    if model_record:
-                        model_record.error_message = str(e)
-                        session.commit()
-            except Exception as db_error:
-                logger.error(f"Error updating database with error message: {db_error}")
-            
-            # Call callback with error
+            # Call callback with error if provided
             if request.callback:
-                request.callback(model_name, False, str(e))
+                try:
+                    request.callback(model_name, False, str(e))
+                except Exception as callback_error:
+                    logger.error(f"Error in model load error callback: {callback_error}")
     
     def _ensure_capacity_for_model(self, required_memory_gb: float):
-        """Free up capacity for a new model if needed."""
-        # Check if we need to unload models due to hard limits (not memory warnings)
-        can_load, message = self._check_memory_constraints(required_memory_gb)
-        while not can_load and "Maximum concurrent models" in message:
-            # Find least recently used model to unload
-            if not self._loaded_models:
-                break
-                
-            lru_model_name = min(
-                self._loaded_models.keys(),
-                key=lambda x: self._loaded_models[x].last_used_at
-            )
+        """Ensure we have capacity for a new model by unloading others if needed."""
+        system_monitor = get_system_monitor()
+        memory_info = system_monitor.get_memory_info()
+        
+        # Calculate current usage
+        current_model_memory = sum(m.memory_usage_gb for m in self._loaded_models.values())
+        max_allowed_memory = memory_info.total_gb * 0.8
+        
+        # If we need more memory, unload least recently used models
+        while current_model_memory + required_memory_gb > max_allowed_memory and self._loaded_models:
+            # Find least recently used model
+            lru_model = min(self._loaded_models.values(), key=lambda m: m.last_used_at)
+            lru_name = lru_model.model_id
             
-            logger.info(f"Unloading LRU model {lru_model_name} to make space for new model")
-            self.unload_model(lru_model_name)
-            
-            # Check again
-            can_load, message = self._check_memory_constraints(required_memory_gb)
-            
-            if len(self._loaded_models) == 0:
-                break
+            logger.info(f"Unloading {lru_name} to make room for new model")
+            self._unload_model_internal(lru_name)
+            current_model_memory -= lru_model.memory_usage_gb
     
-    async def load_model_async(self, model_name: str, model_path: str, priority: int = 0) -> bool:
-        """Asynchronously request model loading."""
-        # Check if model is already loaded or loading
-        with self._lock:
-            if model_name in self._loaded_models:
-                self._loaded_models[model_name].update_last_used()
-                return True
-            
-            if self._loading_status.get(model_name) == LoadingStatus.LOADING:
-                # Wait for existing load to complete
-                while self._loading_status.get(model_name) == LoadingStatus.LOADING:
-                    await asyncio.sleep(0.1)
-                return model_name in self._loaded_models
-        
-        # Start background workers if not already running
-        if not self._queue_worker_running:
-            self._start_queue_worker()
-            self._start_cleanup_worker()
-        
-        # Add to queue
-        request = LoadRequest(
-            model_name=model_name,
-            model_path=model_path,
-            priority=priority
-        )
-        
-        position = self._loading_queue.add_request(request)
-        logger.info(f"Added {model_name} to loading queue at position {position}")
-        
-        # Wait for loading to complete
-        while True:
-            await asyncio.sleep(0.5)
-            status = self._loading_status.get(model_name, LoadingStatus.IDLE)
-            
-            if status == LoadingStatus.LOADED:
-                return True
-            elif status == LoadingStatus.FAILED:
-                return False
-            elif status == LoadingStatus.IDLE:
-                # Check if still in queue
-                if not any(req.model_name == model_name for req in self._loading_queue._queue):
-                    return False
-    
-    def unload_model(self, model_name: str) -> bool:
-        """Unload a model from memory."""
+    def _unload_model_internal(self, model_name: str):
+        """Internal method to unload a model."""
         try:
             with self._lock:
                 if model_name not in self._loaded_models:
-                    logger.warning(f"Model {model_name} not loaded")
                     return False
                 
-                self._set_loading_status(model_name, LoadingStatus.UNLOADING)
-                
-                # Unload from MLX inference engine
-                inference_engine = get_inference_engine()
-                inference_engine.unload_model(model_name)
-                
                 loaded_model = self._loaded_models.pop(model_name)
-                
-                # Clear from status
-                self._loading_status.pop(model_name, None)
-                
-                logger.info(f"Unloaded model {model_name}")
-                
-                # Update database
-                self._set_loading_status(model_name, LoadingStatus.IDLE)
-                
-                return True
-                
+            
+            # Unload from inference engine
+            inference_engine = get_inference_engine()
+            inference_engine.unload_model(model_name)
+            
+            # Update database
+            db_manager = get_database_manager()
+            with db_manager.get_session() as session:
+                model_record = session.query(Model).filter(Model.name == model_name).first()
+                if model_record:
+                    model_record.status = ModelStatus.UNLOADED.value
+                    model_record.last_unloaded_at = datetime.utcnow()
+                    session.commit()
+            
+            self._set_loading_status(model_name, LoadingStatus.IDLE)
+            logger.info(f"Successfully unloaded model {model_name}")
+            return True
+            
         except Exception as e:
             logger.error(f"Error unloading model {model_name}: {e}")
             return False
     
+    async def load_model_async(self, model_name: str, model_path: str, priority: int = 0) -> bool:
+        """Load a model asynchronously."""
+        # Start background workers if not already running
+        self._start_queue_worker()
+        self._start_cleanup_worker()
+        
+        # Check if already loaded
+        with self._lock:
+            if model_name in self._loaded_models:
+                self._loaded_models[model_name].update_last_used()
+                return True
+        
+        # Check if already loading
+        if self._loading_status.get(model_name) == LoadingStatus.LOADING:
+            logger.info(f"Model {model_name} is already being loaded")
+            return True
+        
+        # Create completion future
+        completion_future = asyncio.Future()
+        
+        def load_callback(model_name: str, success: bool, error: Optional[str]):
+            if success:
+                completion_future.set_result(True)
+            else:
+                completion_future.set_exception(RuntimeError(error or "Unknown error"))
+        
+        # Create load request
+        request = LoadRequest(
+            model_name=model_name,
+            model_path=model_path,
+            priority=priority,
+            callback=load_callback
+        )
+        
+        # Add to queue
+        position = self._loading_queue.add_request(request)
+        logger.info(f"Queued model {model_name} for loading (position: {position})")
+        
+        # Wait for completion with timeout
+        try:
+            await asyncio.wait_for(completion_future, timeout=300.0)  # 5 minute timeout
+            return True
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"Model loading timed out after 5 minutes: {model_name}")
+    
+    def unload_model(self, model_name: str) -> bool:
+        """Unload a model."""
+        return self._unload_model_internal(model_name)
+    
     def get_loaded_models(self) -> Dict[str, Dict[str, Any]]:
-        """Get information about currently loaded models."""
+        """Get information about loaded models."""
         with self._lock:
             return {
                 name: {
+                    "model_id": model.model_id,
                     "loaded_at": model.loaded_at.isoformat(),
                     "last_used_at": model.last_used_at.isoformat(),
                     "memory_usage_gb": model.memory_usage_gb,
@@ -603,51 +634,54 @@ class ModelManager:
             }
     
     def get_model_status(self, model_name: str) -> Dict[str, Any]:
-        """Get detailed status of a specific model."""
+        """Get status of a specific model."""
         with self._lock:
-            status = self._loading_status.get(model_name, LoadingStatus.IDLE)
-            loaded_model = self._loaded_models.get(model_name)
-            
-            return {
-                "name": model_name,
-                "status": status.value,
-                "loaded": loaded_model is not None,
-                "loaded_at": loaded_model.loaded_at.isoformat() if loaded_model else None,
-                "last_used_at": loaded_model.last_used_at.isoformat() if loaded_model else None,
-                "memory_usage_gb": loaded_model.memory_usage_gb if loaded_model else 0,
-                "queue_position": next(
-                    (i for i, req in enumerate(self._loading_queue._queue) if req.model_name == model_name),
-                    None
-                )
-            }
+            if model_name in self._loaded_models:
+                model = self._loaded_models[model_name]
+                return {
+                    "status": "loaded",
+                    "loaded_at": model.loaded_at.isoformat(),
+                    "last_used_at": model.last_used_at.isoformat(),
+                    "memory_usage_gb": model.memory_usage_gb
+                }
+            elif model_name in self._loading_status:
+                return {"status": self._loading_status[model_name].value}
+            else:
+                return {"status": "unloaded"}
     
     def refresh_settings(self):
-        """Refresh settings from database (called when settings change)."""
+        """Refresh settings from database."""
         self.max_concurrent_models = self._get_max_concurrent_models(3)
         self._inactivity_timeout = self._get_inactivity_timeout()
-        
+    
     def get_system_status(self) -> Dict[str, Any]:
-        """Get overall system status."""
+        """Get system status information."""
         system_monitor = get_system_monitor()
         memory_info = system_monitor.get_memory_info()
         
-        # Refresh settings from database
-        self.refresh_settings()
-        
         with self._lock:
+            loaded_models_count = len(self._loaded_models)
             total_model_memory = sum(m.memory_usage_gb for m in self._loaded_models.values())
-            
-            return {
-                "loaded_models_count": len(self._loaded_models),
-                "max_concurrent_models": self.max_concurrent_models,
-                "queue_size": self._loading_queue.size(),
-                "total_model_memory_gb": total_model_memory,
-                "system_memory_total_gb": memory_info.total_gb,
-                "system_memory_available_gb": memory_info.available_gb,
-                "memory_usage_percent": (total_model_memory / memory_info.total_gb) * 100,
+            queue_size = self._loading_queue.size()
+        
+        return {
+            "memory": {
+                "total_gb": memory_info.total_gb,
+                "available_gb": memory_info.available_gb,
+                "used_gb": memory_info.used_gb,
+                "percent_used": memory_info.percent_used
+            },
+            "models": {
+                "loaded_count": loaded_models_count,
+                "max_concurrent": self.max_concurrent_models,
+                "total_memory_gb": total_model_memory,
+                "queue_size": queue_size
+            },
+            "settings": {
                 "auto_unload_enabled": self._auto_unload_enabled,
                 "inactivity_timeout_minutes": self._inactivity_timeout.total_seconds() / 60
             }
+        }
     
     async def generate_text(self, model_name: str, prompt: str, config: GenerationConfig) -> GenerationResult:
         """Generate text using a loaded model."""
@@ -677,7 +711,7 @@ class ModelManager:
         return result
     
     async def generate_text_stream(self, model_name: str, prompt: str, config: GenerationConfig) -> AsyncGenerator[str, None]:
-        """Generate text with streaming."""
+        """Generate streaming text using a loaded model."""
         # Ensure model is loaded
         with self._lock:
             if model_name not in self._loaded_models:
@@ -688,10 +722,10 @@ class ModelManager:
         
         # Perform streaming inference
         inference_engine = get_inference_engine()
-        async for token in inference_engine.generate_stream(model_name, prompt, config):
-            yield token
+        async for chunk in inference_engine.generate_stream(model_name, prompt, config):
+            yield chunk
         
-        # Update model usage in database after streaming completes
+        # Update model usage in database
         try:
             db_manager = get_database_manager()
             with db_manager.get_session() as session:
@@ -700,43 +734,35 @@ class ModelManager:
                     model_record.increment_use_count()
                     session.commit()
         except Exception as e:
-            logger.error(f"Error updating model usage for streaming: {e}")
+            logger.error(f"Error updating model usage: {e}")
     
     def get_model_for_inference(self, model_name: str) -> Optional[LoadedModel]:
-        """Get a loaded model for inference (returns None if not loaded)."""
+        """Get a loaded model for inference."""
         with self._lock:
-            loaded_model = self._loaded_models.get(model_name)
-            if loaded_model:
-                loaded_model.update_last_used()
-            return loaded_model
+            return self._loaded_models.get(model_name)
     
     def shutdown(self):
-        """Gracefully shutdown the model manager."""
-        logger.info("Shutting down model manager...")
-        
+        """Shutdown the model manager."""
         self._shutdown_requested = True
-        self._queue_worker_running = False
-        
-        # Unload all models
-        with self._lock:
-            model_names = list(self._loaded_models.keys())
-        
-        for model_name in model_names:
-            self.unload_model(model_name)
-        
-        # Daemon threads will be automatically cleaned up
+        if self._thread_pool:
+            self._thread_pool.shutdown(wait=True)
         logger.info("Model manager shutdown complete")
 
 
 # Global model manager instance
 _model_manager: Optional[ModelManager] = None
+_model_manager_lock = threading.Lock()
 
 
 def get_model_manager() -> ModelManager:
     """Get the global model manager instance."""
     global _model_manager
+    
     if _model_manager is None:
-        _model_manager = ModelManager()
+        with _model_manager_lock:
+            if _model_manager is None:
+                _model_manager = ModelManager()
+    
     return _model_manager
 
 
